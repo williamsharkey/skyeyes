@@ -10,6 +10,7 @@
 
   let ws = null;
   let reconnectTimer = null;
+  let isConnecting = false;
   const RECONNECT_DELAY = 2000;
 
   // Monkey-patch console to forward output
@@ -52,13 +53,18 @@
   });
 
   function connect() {
+    if (isConnecting) {
+      return;
+    }
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
+    isConnecting = true;
     ws = new WebSocket(wsUrl);
 
     ws.onopen = function () {
+      isConnecting = false;
       originalConsole.log(`[skyeyes] Connected as "${page}"`);
       ws.send(JSON.stringify({ type: "skyeyes_ready", page }));
     };
@@ -75,11 +81,13 @@
     };
 
     ws.onclose = function () {
+      isConnecting = false;
       originalConsole.log("[skyeyes] Disconnected, reconnecting...");
       scheduleReconnect();
     };
 
     ws.onerror = function () {
+      isConnecting = false;
       // onclose will fire after this
     };
   }
@@ -141,6 +149,17 @@
       ws.send(JSON.stringify({ type: "skyeyes_result", id, result, error }));
     }
   }
+
+  // Cleanup on page unload
+  window.addEventListener("beforeunload", function () {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (ws) {
+      ws.close();
+    }
+  });
 
   // Connect on load
   connect();
