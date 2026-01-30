@@ -6,7 +6,8 @@
 
   const scriptTag = document.currentScript;
   const page = scriptTag?.getAttribute("data-page") || "unknown";
-  const wsUrl = `ws://${location.host}/skyeyes?page=${encodeURIComponent(page)}`;
+  const wsHost = scriptTag?.getAttribute("data-ws") || location.host;
+  const wsUrl = `ws://${wsHost}/skyeyes?page=${encodeURIComponent(page)}`;
 
   let ws = null;
   let reconnectTimer = null;
@@ -291,6 +292,42 @@
       isConnecting = false;
       originalConsole.log(`[skyeyes] Connected as "${page}"`);
       ws.send(JSON.stringify({ type: "skyeyes_ready", page }));
+
+      // Set shell username from page ID (e.g. "shiro-spirit" → USER=spirit)
+      var dashIdx = page.indexOf("-");
+      if (dashIdx !== -1) {
+        var username = page.substring(dashIdx + 1);
+        function trySetUser() {
+          var set = false;
+          if (window.__shiro && window.__shiro.shell) {
+            window.__shiro.shell.env.USER = username;
+            // Redraw prompt with new username
+            if (window.__shiro.terminal) {
+              window.__shiro.terminal.redrawLine();
+            }
+            set = true;
+          }
+          if (window.__foam && window.__foam.shell) {
+            window.__foam.shell.vfs.env.USER = username;
+            // Redraw prompt with new username
+            if (window.__foam.terminal) {
+              window.__foam.terminal._updatePrompt();
+            }
+            set = true;
+          }
+          return set;
+        }
+        if (!trySetUser()) {
+          // Shell may not be ready yet — retry a few times
+          var attempts = 0;
+          var retryInterval = setInterval(function() {
+            attempts++;
+            if (trySetUser() || attempts >= 10) {
+              clearInterval(retryInterval);
+            }
+          }, 500);
+        }
+      }
 
       // Start heartbeat
       startHeartbeat();
