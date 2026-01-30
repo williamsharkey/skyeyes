@@ -4,10 +4,25 @@
 (function () {
   "use strict";
 
-  const scriptTag = document.currentScript;
+  // Get script tag - document.currentScript can be null after dynamic loads or reloads
+  let scriptTag = document.currentScript;
+  if (!scriptTag) {
+    // Fallback: find script tag by data-page attribute (handles reload edge cases)
+    scriptTag = document.querySelector('script[data-page]');
+  }
   const page = scriptTag?.getAttribute("data-page") || "unknown";
   const wsHost = scriptTag?.getAttribute("data-ws") || location.host;
   const wsUrl = `ws://${wsHost}/skyeyes?page=${encodeURIComponent(page)}`;
+
+  // Log page ID for debugging reconnection issues
+  const originalConsole = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    info: console.info.bind(console),
+    debug: console.debug.bind(console),
+  };
+  originalConsole.log(`[skyeyes] Initializing with page="${page}", wsUrl="${wsUrl}"`);
 
   let ws = null;
   let reconnectTimer = null;
@@ -238,13 +253,7 @@
     return str.substring(0, maxLength) + '... [truncated]';
   }
 
-  // Monkey-patch console to forward output
-  const originalConsole = {
-    log: console.log.bind(console),
-    warn: console.warn.bind(console),
-    error: console.error.bind(console),
-    info: console.info.bind(console),
-  };
+  // Monkey-patch console to forward output (originalConsole defined above)
 
   function forwardConsole(level, args) {
     if (ws && ws.readyState === WebSocket.OPEN) {
