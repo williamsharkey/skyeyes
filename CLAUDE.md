@@ -71,7 +71,7 @@ package.json    # Metadata only (no build step)
 - **Event capture** — track element additions/removals, attribute changes, text content updates
 - **Mutation log** — queryable log with type/target filtering, pagination, and automatic FIFO management
 
-### Performance Monitoring
+### Performance Monitoring & Analysis
 - **Timing data** — duration tracking for all eval, terminal, and DOM operations
 - **Health metrics** — uptime, reconnect count, message count, error rates
 - **Latency tracking** — ping/pong round-trip time measurement
@@ -82,6 +82,17 @@ package.json    # Metadata only (no build step)
 - **Diagnostics endpoint** — comprehensive bridge health reporting across all pages
 - **Memory monitoring** — heap usage tracking (when available)
 - **System info** — viewport, user agent, page URL, document state
+- **Performance profiler** — PerformanceObserver API integration for page load metrics, resource timing, paint timing
+- **Core Web Vitals** — track LCP (Largest Contentful Paint), CLS (Cumulative Layout Shift), FCP (First Contentful Paint)
+- **Long task detection** — identify main thread blocking tasks >50ms
+- **Performance regression testing** — compare metrics over time, detect performance degradation
+
+### Visual Testing
+- **Screenshot capture** — canvas-based screenshots of elements or full viewport
+- **Visual regression** — compare screenshots to detect UI changes
+- **Multiple formats** — PNG (lossless) and JPEG (compressed) support
+- **Screenshot cache** — store up to 10 screenshots for comparison
+- **Visual comparison** — dimension matching, pixel-perfect comparison, size diff analysis
 
 ## API (from a Claude worker's perspective)
 
@@ -460,3 +471,36 @@ Validates:
 - Observer options handling
 - Mutation entry structure
 - Timestamp tracking
+
+### Performance Profiler Test Suite (`test-performance-profiler.sh`)
+Validates:
+- Starting performance monitoring
+- Performance snapshot retrieval
+- Performance metrics collection
+- Filtering by metric type
+- Summary statistics generation
+- Navigation timing data
+- Core Web Vitals (CLS, LCP, FCP)
+- Long task detection
+- Clear performance log
+- Stop monitoring
+- Observer state management
+- Custom observer types
+- Log size limit enforcement (max 500 entries, FIFO)
+
+### Screenshot Capability Test Suite (`test-screenshot.sh`)
+Validates:
+- Viewport screenshot capture
+- Element screenshot capture
+- Dimension and size info
+- Data URL return option
+- Screenshot cache retrieval
+- Screenshot listing
+- Screenshot metadata
+- Visual comparison (identical screenshots)
+- Visual comparison (different screenshots)
+- Clear specific screenshot
+- Clear all screenshots
+- JPEG format support
+- PNG format support
+- Cache size limit enforcement (max 10, FIFO)

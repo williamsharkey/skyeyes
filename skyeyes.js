@@ -379,6 +379,26 @@
           getMutationLog(msg.id, msg.options);
         } else if (msg.type === "mutation_clear") {
           clearMutationLog(msg.id);
+        } else if (msg.type === "performance_start") {
+          startPerformanceMonitoring(msg.id, msg.options);
+        } else if (msg.type === "performance_stop") {
+          stopPerformanceMonitoring(msg.id);
+        } else if (msg.type === "performance_metrics") {
+          getPerformanceMetrics(msg.id, msg.options);
+        } else if (msg.type === "performance_clear") {
+          clearPerformanceLog(msg.id);
+        } else if (msg.type === "performance_snapshot") {
+          getPerformanceSnapshot(msg.id);
+        } else if (msg.type === "screenshot_capture") {
+          captureScreenshot(msg.id, msg.options);
+        } else if (msg.type === "screenshot_get") {
+          getScreenshot(msg.id, msg.screenshotId);
+        } else if (msg.type === "screenshot_list") {
+          listScreenshots(msg.id);
+        } else if (msg.type === "screenshot_clear") {
+          clearScreenshots(msg.id, msg.screenshotId);
+        } else if (msg.type === "screenshot_compare") {
+          compareScreenshots(msg.id, msg.screenshot1Id, msg.screenshot2Id);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -3443,6 +3463,528 @@
     return element.tagName.toLowerCase();
   }
 
+  // Performance Profiler - Measure page performance metrics
+  const performanceLog = [];
+  const MAX_PERFORMANCE_LOG_SIZE = 500;
+  let performanceObservers = [];
+  let performanceMonitoringActive = false;
+
+  // Start performance monitoring
+  function startPerformanceMonitoring(id, options = {}) {
+    try {
+      // Stop existing observers if any
+      stopAllPerformanceObservers();
+
+      const types = options.types || ['navigation', 'resource', 'paint', 'layout-shift', 'largest-contentful-paint', 'longtask'];
+      const observers = [];
+
+      // Create observers for each type
+      for (const type of types) {
+        try {
+          const observer = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              addToPerformanceLog({
+                type,
+                name: entry.name,
+                startTime: entry.startTime,
+                duration: entry.duration,
+                entryType: entry.entryType,
+                timestamp: Date.now(),
+                details: extractEntryDetails(entry, type),
+              });
+            }
+          });
+
+          observer.observe({ type, buffered: true });
+          observers.push({ type, observer });
+        } catch (err) {
+          // Some entry types might not be supported
+          originalConsole.warn(`[skyeyes] PerformanceObserver type '${type}' not supported:`, err.message);
+        }
+      }
+
+      performanceObservers = observers;
+      performanceMonitoringActive = true;
+
+      sendResult(id, {
+        started: true,
+        observing: observers.map(o => o.type),
+        timestamp: Date.now(),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Stop performance monitoring
+  function stopPerformanceMonitoring(id) {
+    try {
+      stopAllPerformanceObservers();
+
+      sendResult(id, {
+        stopped: true,
+        capturedEntries: performanceLog.length,
+        timestamp: Date.now(),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Get performance metrics
+  function getPerformanceMetrics(id, options = {}) {
+    try {
+      const type = options.type; // filter by type
+      const limit = options.limit || performanceLog.length;
+      const offset = options.offset || 0;
+
+      let filtered = performanceLog;
+
+      // Apply type filter
+      if (type) {
+        filtered = filtered.filter(e => e.type === type);
+      }
+
+      const slice = filtered.slice(offset, offset + limit);
+
+      // Calculate summary statistics
+      const summary = {
+        total: filtered.length,
+        byType: {},
+        navigation: null,
+        paint: null,
+        layoutShifts: null,
+        longTasks: null,
+      };
+
+      // Count by type
+      for (const entry of filtered) {
+        summary.byType[entry.type] = (summary.byType[entry.type] || 0) + 1;
+      }
+
+      // Navigation timing (page load)
+      const navEntries = filtered.filter(e => e.type === 'navigation');
+      if (navEntries.length > 0) {
+        const nav = navEntries[0].details;
+        summary.navigation = {
+          domContentLoaded: nav.domContentLoadedEventEnd - nav.domContentLoadedEventStart,
+          loadComplete: nav.loadEventEnd - nav.loadEventStart,
+          domInteractive: nav.domInteractive,
+          domComplete: nav.domComplete,
+          transferSize: nav.transferSize,
+          encodedBodySize: nav.encodedBodySize,
+          decodedBodySize: nav.decodedBodySize,
+        };
+      }
+
+      // Paint timing
+      const paintEntries = filtered.filter(e => e.type === 'paint');
+      if (paintEntries.length > 0) {
+        summary.paint = {};
+        for (const entry of paintEntries) {
+          summary.paint[entry.name] = entry.startTime;
+        }
+      }
+
+      // Layout shifts (CLS - Cumulative Layout Shift)
+      const layoutShifts = filtered.filter(e => e.type === 'layout-shift');
+      if (layoutShifts.length > 0) {
+        const totalScore = layoutShifts.reduce((sum, e) => sum + (e.details.value || 0), 0);
+        summary.layoutShifts = {
+          count: layoutShifts.length,
+          cumulativeScore: totalScore,
+          averageScore: totalScore / layoutShifts.length,
+        };
+      }
+
+      // Long tasks (>50ms blocking tasks)
+      const longTasks = filtered.filter(e => e.type === 'longtask');
+      if (longTasks.length > 0) {
+        const totalDuration = longTasks.reduce((sum, e) => sum + e.duration, 0);
+        summary.longTasks = {
+          count: longTasks.length,
+          totalDuration,
+          averageDuration: totalDuration / longTasks.length,
+          maxDuration: Math.max(...longTasks.map(e => e.duration)),
+        };
+      }
+
+      sendResult(id, {
+        entries: slice,
+        total: filtered.length,
+        offset,
+        limit,
+        monitoringActive: performanceMonitoringActive,
+        summary,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Clear performance log
+  function clearPerformanceLog(id) {
+    try {
+      const count = performanceLog.length;
+      performanceLog.length = 0;
+      sendResult(id, {
+        cleared: count,
+        remaining: performanceLog.length,
+        monitoringActive: performanceMonitoringActive,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Get current performance snapshot
+  function getPerformanceSnapshot(id) {
+    try {
+      const timing = performance.timing;
+      const navigation = performance.navigation;
+      const memory = performance.memory;
+
+      const snapshot = {
+        timestamp: Date.now(),
+        timing: {
+          navigationStart: timing.navigationStart,
+          domContentLoadedEventEnd: timing.domContentLoadedEventEnd - timing.navigationStart,
+          loadEventEnd: timing.loadEventEnd - timing.navigationStart,
+          domInteractive: timing.domInteractive - timing.navigationStart,
+          domComplete: timing.domComplete - timing.navigationStart,
+          responseEnd: timing.responseEnd - timing.navigationStart,
+          requestStart: timing.requestStart - timing.navigationStart,
+        },
+        navigation: {
+          type: navigation.type,
+          redirectCount: navigation.redirectCount,
+        },
+        memory: memory ? {
+          usedJSHeapSize: memory.usedJSHeapSize,
+          totalJSHeapSize: memory.totalJSHeapSize,
+          jsHeapSizeLimit: memory.jsHeapSizeLimit,
+        } : null,
+        resources: performance.getEntriesByType('resource').length,
+        marks: performance.getEntriesByType('mark').length,
+        measures: performance.getEntriesByType('measure').length,
+      };
+
+      sendResult(id, snapshot, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Helper: Stop all performance observers
+  function stopAllPerformanceObservers() {
+    for (const { observer } of performanceObservers) {
+      try {
+        observer.disconnect();
+      } catch (err) {
+        // Ignore errors during disconnect
+      }
+    }
+    performanceObservers = [];
+    performanceMonitoringActive = false;
+  }
+
+  // Helper: Extract details from performance entry
+  function extractEntryDetails(entry, type) {
+    const details = {};
+
+    if (type === 'navigation') {
+      details.domContentLoadedEventStart = entry.domContentLoadedEventStart;
+      details.domContentLoadedEventEnd = entry.domContentLoadedEventEnd;
+      details.loadEventStart = entry.loadEventStart;
+      details.loadEventEnd = entry.loadEventEnd;
+      details.domInteractive = entry.domInteractive;
+      details.domComplete = entry.domComplete;
+      details.transferSize = entry.transferSize;
+      details.encodedBodySize = entry.encodedBodySize;
+      details.decodedBodySize = entry.decodedBodySize;
+      details.redirectCount = entry.redirectCount;
+    } else if (type === 'resource') {
+      details.initiatorType = entry.initiatorType;
+      details.transferSize = entry.transferSize;
+      details.encodedBodySize = entry.encodedBodySize;
+      details.decodedBodySize = entry.decodedBodySize;
+      details.responseEnd = entry.responseEnd;
+    } else if (type === 'paint') {
+      // Paint entries have minimal details
+      details.paintType = entry.name;
+    } else if (type === 'layout-shift') {
+      details.value = entry.value;
+      details.hadRecentInput = entry.hadRecentInput;
+    } else if (type === 'largest-contentful-paint') {
+      details.renderTime = entry.renderTime;
+      details.loadTime = entry.loadTime;
+      details.size = entry.size;
+      details.elementType = entry.element?.tagName?.toLowerCase();
+    } else if (type === 'longtask') {
+      details.attribution = entry.attribution?.map(attr => ({
+        name: attr.name,
+        entryType: attr.entryType,
+        containerType: attr.containerType,
+        containerName: attr.containerName,
+      }));
+    }
+
+    return details;
+  }
+
+  // Helper: Add to performance log
+  function addToPerformanceLog(entry) {
+    performanceLog.push(entry);
+    // Limit log size (FIFO)
+    if (performanceLog.length > MAX_PERFORMANCE_LOG_SIZE) {
+      performanceLog.shift();
+    }
+  }
+
+  // Screenshot Capability - Visual regression testing
+  const screenshotCache = new Map();
+  const MAX_SCREENSHOT_CACHE = 10;
+
+  // Capture screenshot of element or viewport
+  function captureScreenshot(id, options = {}) {
+    const startTime = Date.now();
+    healthMetrics.executions.dom.count++;
+
+    try {
+      const selector = options.selector || null;
+      const fullPage = options.fullPage || false;
+      const quality = options.quality || 0.92;
+      const format = options.format || 'png'; // png or jpeg
+      const screenshotId = options.screenshotId || `screenshot-${Date.now()}`;
+
+      let element = selector ? document.querySelector(selector) : document.documentElement;
+
+      if (!element) {
+        sendResultWithTiming(id, null, serializeError(new Error(`Element not found: ${selector}`)), startTime);
+        return;
+      }
+
+      // Create canvas
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      // Get element dimensions
+      const rect = element.getBoundingClientRect();
+      const scrollX = window.scrollX || window.pageXOffset;
+      const scrollY = window.scrollY || window.pageYOffset;
+
+      let width, height, x, y;
+
+      if (fullPage && element === document.documentElement) {
+        // Full page screenshot
+        width = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);
+        height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        x = 0;
+        y = 0;
+      } else {
+        // Element screenshot
+        width = rect.width;
+        height = rect.height;
+        x = rect.left + scrollX;
+        y = rect.top + scrollY;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+
+      // Set background
+      ctx.fillStyle = window.getComputedStyle(element).backgroundColor || '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+
+      // Render element as SVG foreignObject (works for most DOM content)
+      const svgData = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+          <foreignObject width="100%" height="100%">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden;">
+              ${element.outerHTML}
+            </div>
+          </foreignObject>
+        </svg>
+      `;
+
+      const img = new Image();
+      const blob = new Blob([svgData], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+
+      img.onload = function() {
+        try {
+          ctx.drawImage(img, 0, 0);
+          URL.revokeObjectURL(url);
+
+          // Convert to data URL
+          const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
+          const dataUrl = canvas.toDataURL(mimeType, quality);
+
+          // Store in cache
+          screenshotCache.set(screenshotId, {
+            id: screenshotId,
+            dataUrl,
+            width,
+            height,
+            format,
+            size: dataUrl.length,
+            timestamp: Date.now(),
+            selector: selector || 'viewport',
+            fullPage,
+          });
+
+          // Limit cache size
+          if (screenshotCache.size > MAX_SCREENSHOT_CACHE) {
+            const firstKey = screenshotCache.keys().next().value;
+            screenshotCache.delete(firstKey);
+          }
+
+          const duration = Date.now() - startTime;
+          healthMetrics.executions.dom.totalTime += duration;
+
+          sendResultWithTiming(id, {
+            screenshotId,
+            width,
+            height,
+            format,
+            size: dataUrl.length,
+            sizeKB: Math.round(dataUrl.length / 1024),
+            cached: true,
+            dataUrl: options.returnData ? dataUrl : undefined,
+          }, null, startTime);
+
+        } catch (err) {
+          const duration = Date.now() - startTime;
+          healthMetrics.executions.dom.totalTime += duration;
+          healthMetrics.executions.dom.errors++;
+          healthMetrics.totalErrors++;
+          sendResultWithTiming(id, null, serializeError(err), startTime);
+        }
+      };
+
+      img.onerror = function() {
+        URL.revokeObjectURL(url);
+        const duration = Date.now() - startTime;
+        healthMetrics.executions.dom.totalTime += duration;
+        healthMetrics.executions.dom.errors++;
+        healthMetrics.totalErrors++;
+        sendResultWithTiming(id, null, serializeError(new Error('Failed to render screenshot')), startTime);
+      };
+
+      img.src = url;
+
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+      healthMetrics.executions.dom.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, serializeError(err), startTime);
+    }
+  }
+
+  // Get screenshot from cache
+  function getScreenshot(id, screenshotId) {
+    try {
+      const screenshot = screenshotCache.get(screenshotId);
+
+      if (!screenshot) {
+        sendResult(id, null, serializeError(new Error(`Screenshot '${screenshotId}' not found`)));
+        return;
+      }
+
+      sendResult(id, screenshot, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // List cached screenshots
+  function listScreenshots(id) {
+    try {
+      const list = Array.from(screenshotCache.values()).map(s => ({
+        id: s.id,
+        timestamp: s.timestamp,
+        width: s.width,
+        height: s.height,
+        format: s.format,
+        sizeKB: Math.round(s.size / 1024),
+        selector: s.selector,
+        fullPage: s.fullPage,
+      }));
+
+      sendResult(id, {
+        count: list.length,
+        screenshots: list,
+        maxScreenshots: MAX_SCREENSHOT_CACHE,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Clear screenshot cache
+  function clearScreenshots(id, screenshotId) {
+    try {
+      if (screenshotId) {
+        const existed = screenshotCache.has(screenshotId);
+        screenshotCache.delete(screenshotId);
+        sendResult(id, {
+          cleared: existed ? 1 : 0,
+          remaining: screenshotCache.size,
+        }, null);
+      } else {
+        const count = screenshotCache.size;
+        screenshotCache.clear();
+        sendResult(id, {
+          cleared: count,
+          remaining: screenshotCache.size,
+        }, null);
+      }
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Compare two screenshots (simple pixel difference)
+  function compareScreenshots(id, screenshot1Id, screenshot2Id) {
+    try {
+      const s1 = screenshotCache.get(screenshot1Id);
+      const s2 = screenshotCache.get(screenshot2Id);
+
+      if (!s1) {
+        sendResult(id, null, serializeError(new Error(`Screenshot '${screenshot1Id}' not found`)));
+        return;
+      }
+
+      if (!s2) {
+        sendResult(id, null, serializeError(new Error(`Screenshot '${screenshot2Id}' not found`)));
+        return;
+      }
+
+      // Basic comparison - dimensions and size
+      const dimensionsMatch = s1.width === s2.width && s1.height === s2.height;
+      const dataMatch = s1.dataUrl === s2.dataUrl;
+
+      sendResult(id, {
+        screenshot1: screenshot1Id,
+        screenshot2: screenshot2Id,
+        dimensionsMatch,
+        identical: dataMatch,
+        sizeDiff: s2.size - s1.size,
+        sizeDiffKB: Math.round((s2.size - s1.size) / 1024),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
   // Cleanup on page unload
   window.addEventListener("beforeunload", function () {
     stopHeartbeat();
@@ -3450,6 +3992,7 @@
       mutationObserver.disconnect();
       mutationObserver = null;
     }
+    stopAllPerformanceObservers();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
