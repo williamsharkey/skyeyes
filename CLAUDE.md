@@ -64,6 +64,13 @@ package.json    # Metadata only (no build step)
 - **Error recovery** — graceful handling of errors with detailed context
 - **Binary data support** — base64 encoding/decoding for binary files over WebSocket
 
+### DOM Observation
+- **Mutation observer** — real-time DOM change tracking for Spirit (childList, attributes, characterData)
+- **Change queuing** — automatic logging of mutations with configurable filters and size limits
+- **Selective observation** — target specific elements, filter by type, watch only certain attributes
+- **Event capture** — track element additions/removals, attribute changes, text content updates
+- **Mutation log** — queryable log with type/target filtering, pagination, and automatic FIFO management
+
 ### Performance Monitoring
 - **Timing data** — duration tracking for all eval, terminal, and DOM operations
 - **Health metrics** — uptime, reconnect count, message count, error rates
@@ -435,3 +442,21 @@ Validates:
 - Log entry structure
 - Response metadata (total, filtered, returned)
 - Summary aggregation
+
+### Mutation Observer Test Suite (`test-mutation-observer.sh`)
+Validates:
+- Starting mutation observer
+- Capturing childList mutations (element additions/removals)
+- Capturing attribute mutations (with old/new values)
+- Capturing characterData mutations (text changes)
+- Stopping mutation observer
+- Observer state management (active/inactive)
+- Mutation log retrieval with filters
+- Filtering by mutation type
+- Filtering by target selector
+- Clearing mutation log
+- Log size limit enforcement (max 200 entries, FIFO)
+- Custom target element observation
+- Observer options handling
+- Mutation entry structure
+- Timestamp tracking

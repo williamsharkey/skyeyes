@@ -371,6 +371,14 @@
           getNetworkLog(msg.id, msg.options);
         } else if (msg.type === "network_clear") {
           clearNetworkLog(msg.id);
+        } else if (msg.type === "mutation_start") {
+          startMutationObserver(msg.id, msg.options);
+        } else if (msg.type === "mutation_stop") {
+          stopMutationObserver(msg.id);
+        } else if (msg.type === "mutation_log") {
+          getMutationLog(msg.id, msg.options);
+        } else if (msg.type === "mutation_clear") {
+          clearMutationLog(msg.id);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -3248,9 +3256,200 @@
     return Math.round(total / withDuration.length);
   }
 
+  // DOM Mutation Observer - Track live DOM changes for Spirit
+  const mutationLog = [];
+  const MAX_MUTATION_LOG_SIZE = 200;
+  let mutationObserver = null;
+  let observerActive = false;
+
+  // Start observing DOM mutations
+  function startMutationObserver(id, options = {}) {
+    try {
+      // Stop existing observer if any
+      if (mutationObserver) {
+        mutationObserver.disconnect();
+      }
+
+      const observeOptions = {
+        childList: options.childList !== false, // default true
+        attributes: options.attributes !== false, // default true
+        characterData: options.characterData !== false, // default true
+        subtree: options.subtree !== false, // default true
+        attributeOldValue: options.attributeOldValue || false,
+        characterDataOldValue: options.characterDataOldValue || false,
+        attributeFilter: options.attributeFilter || undefined,
+      };
+
+      // Create observer
+      mutationObserver = new MutationObserver((mutations) => {
+        const timestamp = Date.now();
+
+        // Process each mutation
+        for (const mutation of mutations) {
+          const logEntry = {
+            id: mutationLog.length + 1,
+            timestamp,
+            type: mutation.type,
+            target: getElementSelector(mutation.target),
+            targetTag: mutation.target.tagName?.toLowerCase(),
+          };
+
+          // Add type-specific details
+          if (mutation.type === 'childList') {
+            logEntry.addedNodes = Array.from(mutation.addedNodes).map(node => ({
+              type: node.nodeType,
+              tag: node.tagName?.toLowerCase(),
+              selector: node.nodeType === 1 ? getElementSelector(node) : null,
+              text: node.nodeType === 3 ? truncateString(node.textContent, 100) : null,
+            }));
+            logEntry.removedNodes = Array.from(mutation.removedNodes).map(node => ({
+              type: node.nodeType,
+              tag: node.tagName?.toLowerCase(),
+              selector: node.nodeType === 1 ? getElementSelector(node) : null,
+              text: node.nodeType === 3 ? truncateString(node.textContent, 100) : null,
+            }));
+          } else if (mutation.type === 'attributes') {
+            logEntry.attributeName = mutation.attributeName;
+            logEntry.oldValue = mutation.oldValue;
+            logEntry.newValue = mutation.target.getAttribute(mutation.attributeName);
+          } else if (mutation.type === 'characterData') {
+            logEntry.oldValue = mutation.oldValue;
+            logEntry.newValue = truncateString(mutation.target.textContent, 200);
+          }
+
+          addToMutationLog(logEntry);
+        }
+      });
+
+      // Start observing
+      const targetElement = options.target ?
+        (typeof options.target === 'string' ? document.querySelector(options.target) : options.target) :
+        document.body;
+
+      if (!targetElement) {
+        sendResult(id, null, serializeError(new Error('Target element not found')));
+        return;
+      }
+
+      mutationObserver.observe(targetElement, observeOptions);
+      observerActive = true;
+
+      sendResult(id, {
+        started: true,
+        target: getElementSelector(targetElement),
+        options: observeOptions,
+        timestamp: Date.now(),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Stop observing DOM mutations
+  function stopMutationObserver(id) {
+    try {
+      if (mutationObserver) {
+        mutationObserver.disconnect();
+        mutationObserver = null;
+        observerActive = false;
+      }
+
+      sendResult(id, {
+        stopped: true,
+        wasActive: observerActive,
+        capturedMutations: mutationLog.length,
+        timestamp: Date.now(),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Get mutation log
+  function getMutationLog(id, options = {}) {
+    try {
+      const limit = options.limit || mutationLog.length;
+      const offset = options.offset || 0;
+      const type = options.type; // filter by mutation type
+      const target = options.target; // filter by target selector
+
+      let filtered = mutationLog;
+
+      // Apply filters
+      if (type) {
+        filtered = filtered.filter(m => m.type === type);
+      }
+      if (target) {
+        filtered = filtered.filter(m => m.target?.includes(target));
+      }
+
+      const slice = filtered.slice(offset, offset + limit);
+
+      sendResult(id, {
+        mutations: slice,
+        total: filtered.length,
+        offset,
+        limit,
+        observerActive,
+        filters: { type, target },
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Clear mutation log
+  function clearMutationLog(id) {
+    try {
+      const count = mutationLog.length;
+      mutationLog.length = 0; // Clear array
+      sendResult(id, {
+        cleared: count,
+        remaining: mutationLog.length,
+        observerActive,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Add mutation to log
+  function addToMutationLog(entry) {
+    mutationLog.push(entry);
+    // Limit log size (FIFO)
+    if (mutationLog.length > MAX_MUTATION_LOG_SIZE) {
+      mutationLog.shift();
+    }
+  }
+
+  // Helper: Get a CSS selector for an element
+  function getElementSelector(element) {
+    if (!element || element.nodeType !== 1) return null;
+
+    if (element.id) {
+      return `#${element.id}`;
+    }
+
+    if (element.className && typeof element.className === 'string') {
+      const classes = element.className.trim().split(/\s+/).join('.');
+      if (classes) {
+        return `${element.tagName.toLowerCase()}.${classes}`;
+      }
+    }
+
+    return element.tagName.toLowerCase();
+  }
+
   // Cleanup on page unload
   window.addEventListener("beforeunload", function () {
     stopHeartbeat();
+    if (mutationObserver) {
+      mutationObserver.disconnect();
+      mutationObserver = null;
+    }
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
