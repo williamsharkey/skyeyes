@@ -24,6 +24,10 @@ package.json    # Metadata only (no build step)
 
 - **Execute arbitrary JS** in the page's global scope
 - **Async support** — automatically resolves Promises before returning
+- **Timeout handling** — configurable timeouts for eval and terminal commands (default 30s)
+- **Terminal execution** — execute shell commands with exit code detection
+- **Exit code detection** — captures command exit codes for proper error handling
+- **Prompt detection** — identifies terminal prompts for readiness checking
 - **Console forwarding** — `console.log/warn/error/info` output sent to server
 - **Error capture** — uncaught errors and unhandled rejections forwarded
 - **Auto-reconnect** — reconnects to WebSocket on disconnect (2s delay)
@@ -37,10 +41,21 @@ Workers interact with skyeyes through Nimbus REST endpoints:
 # Simple GET eval (plain text response, no JSON escaping needed)
 curl 'localhost:7777/api/skyeyes/shiro/eval?code=document.title'
 
-# POST eval (JSON body, JSON response)
+# POST eval with timeout (JSON body, JSON response)
 curl -X POST localhost:7777/api/skyeyes/shiro/exec \
   -H 'Content-Type: application/json' \
-  -d '{"code":"document.querySelector(\".score\").textContent"}'
+  -d '{"code":"document.querySelector(\".score\").textContent", "timeout": 5000}'
+
+# Execute terminal command with timeout and exit code detection
+curl -X POST localhost:7777/api/skyeyes/shiro/terminal/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"ls -la", "timeout": 10000}'
+
+# Read terminal output and status
+curl localhost:7777/api/skyeyes/shiro/terminal/read
+
+# Check terminal status (busy, ready, cwd, exit code, prompt pattern)
+curl localhost:7777/api/skyeyes/shiro/terminal/status
 
 # Reload the page
 curl -X POST localhost:7777/api/skyeyes/shiro/reload
