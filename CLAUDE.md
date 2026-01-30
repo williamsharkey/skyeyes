@@ -94,6 +94,14 @@ package.json    # Metadata only (no build step)
 - **Screenshot cache** — store up to 10 screenshots for comparison
 - **Visual comparison** — dimension matching, pixel-perfect comparison, size diff analysis
 
+### Storage Monitoring
+- **Storage usage tracking** — monitor localStorage and sessionStorage size, item count, quota usage
+- **Real-time change detection** — track set, remove, and clear operations
+- **Storage APIs** — read, write, and manage browser storage
+- **Change log with filtering** — filter by storage type, change type, or key
+- **Quota monitoring** — detect when storage is nearing capacity
+- **Storage leak detection** — track storage growth over time
+
 ## API (from a Claude worker's perspective)
 
 Workers interact with skyeyes through Nimbus REST endpoints:
@@ -504,3 +512,24 @@ Validates:
 - JPEG format support
 - PNG format support
 - Cache size limit enforcement (max 10, FIFO)
+
+### Storage Monitoring Test Suite (`test-storage-monitoring.sh`)
+Validates:
+- Storage usage retrieval (localStorage and sessionStorage)
+- Item count and size calculations
+- Set localStorage item
+- Get localStorage item
+- Set sessionStorage item
+- Get sessionStorage item
+- Start storage monitoring
+- Detect storage changes
+- Filter by storage type
+- Filter by change type
+- Remove storage item
+- Clear storage log
+- Clear localStorage
+- Clear sessionStorage
+- Stop storage monitoring
+- Monitoring state management
+- Storage size calculation
+- Storage items listing

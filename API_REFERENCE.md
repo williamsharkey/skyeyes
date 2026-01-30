@@ -83,6 +83,20 @@ Complete command reference for all skyeyes features.
 | `screenshot_clear` | Clear cache | `screenshotId` |
 | `screenshot_compare` | Compare screenshots | `screenshot1Id`, `screenshot2Id` |
 
+## Storage Monitoring
+
+| Command | Purpose | Key Options |
+|---------|---------|-------------|
+| `storage_usage` | Get storage stats | - |
+| `storage_start` | Start monitoring | `interval`, `trackChanges` |
+| `storage_stop` | Stop monitoring | - |
+| `storage_log` | Get change log | `storageType`, `changeType`, `key`, `limit`, `offset` |
+| `storage_clear_log` | Clear change log | - |
+| `storage_set` | Set item | `storageType`, `key`, `value` |
+| `storage_get` | Get item | `storageType`, `key` |
+| `storage_remove` | Remove item | `storageType`, `key` |
+| `storage_clear` | Clear storage | `storageType` |
+
 ## File Transfer
 
 | Command | Purpose | Key Options |
@@ -174,7 +188,7 @@ while (!apiDone) {
 
 ---
 
-**Total Commands:** 50+
-**Total Features:** 15 major systems
-**Test Coverage:** 120+ test cases
-**Documentation:** 11 comprehensive guides
+**Total Commands:** 60+
+**Total Features:** 16 major systems
+**Test Coverage:** 138+ test cases
+**Documentation:** 12 comprehensive guides

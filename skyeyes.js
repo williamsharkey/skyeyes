@@ -399,6 +399,24 @@
           clearScreenshots(msg.id, msg.screenshotId);
         } else if (msg.type === "screenshot_compare") {
           compareScreenshots(msg.id, msg.screenshot1Id, msg.screenshot2Id);
+        } else if (msg.type === "storage_usage") {
+          getStorageUsage(msg.id);
+        } else if (msg.type === "storage_start") {
+          startStorageMonitoring(msg.id, msg.options);
+        } else if (msg.type === "storage_stop") {
+          stopStorageMonitoring(msg.id);
+        } else if (msg.type === "storage_log") {
+          getStorageLog(msg.id, msg.options);
+        } else if (msg.type === "storage_clear_log") {
+          clearStorageLog(msg.id);
+        } else if (msg.type === "storage_set") {
+          setStorageItem(msg.id, msg.storageType, msg.key, msg.value);
+        } else if (msg.type === "storage_get") {
+          getStorageItem(msg.id, msg.storageType, msg.key);
+        } else if (msg.type === "storage_remove") {
+          removeStorageItem(msg.id, msg.storageType, msg.key);
+        } else if (msg.type === "storage_clear") {
+          clearStorage(msg.id, msg.storageType);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -3985,6 +4003,369 @@
     }
   }
 
+  // Storage Monitoring - Track localStorage and sessionStorage usage
+  const storageLog = [];
+  const MAX_STORAGE_LOG_SIZE = 200;
+  let storageMonitoringActive = false;
+  let storageInterval = null;
+
+  // Get current storage usage
+  function getStorageUsage(id) {
+    try {
+      const localStorage = calculateStorageSize(window.localStorage);
+      const sessionStorage = calculateStorageSize(window.sessionStorage);
+
+      const result = {
+        timestamp: Date.now(),
+        localStorage: {
+          itemCount: window.localStorage.length,
+          sizeBytes: localStorage.totalSize,
+          sizeKB: Math.round(localStorage.totalSize / 1024),
+          quota: localStorage.quota,
+          percentUsed: localStorage.percentUsed,
+          items: localStorage.items,
+        },
+        sessionStorage: {
+          itemCount: window.sessionStorage.length,
+          sizeBytes: sessionStorage.totalSize,
+          sizeKB: Math.round(sessionStorage.totalSize / 1024),
+          quota: sessionStorage.quota,
+          percentUsed: sessionStorage.percentUsed,
+          items: sessionStorage.items,
+        },
+        monitoringActive: storageMonitoringActive,
+      };
+
+      sendResult(id, result, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Start monitoring storage changes
+  function startStorageMonitoring(id, options = {}) {
+    try {
+      // Stop existing monitoring if any
+      if (storageInterval) {
+        clearInterval(storageInterval);
+      }
+
+      const interval = options.interval || 1000; // Default 1 second
+      const trackChanges = options.trackChanges !== false; // Default true
+
+      // Take initial snapshot
+      const initialLocal = captureStorageSnapshot(window.localStorage, 'localStorage');
+      const initialSession = captureStorageSnapshot(window.sessionStorage, 'sessionStorage');
+      let lastSnapshot = { localStorage: initialLocal, sessionStorage: initialSession };
+
+      // Poll for changes
+      storageInterval = setInterval(() => {
+        const currentLocal = captureStorageSnapshot(window.localStorage, 'localStorage');
+        const currentSession = captureStorageSnapshot(window.sessionStorage, 'sessionStorage');
+
+        if (trackChanges) {
+          // Detect changes
+          const changes = detectStorageChanges(lastSnapshot, {
+            localStorage: currentLocal,
+            sessionStorage: currentSession
+          });
+
+          if (changes.length > 0) {
+            for (const change of changes) {
+              addToStorageLog(change);
+            }
+          }
+        }
+
+        lastSnapshot = { localStorage: currentLocal, sessionStorage: currentSession };
+      }, interval);
+
+      storageMonitoringActive = true;
+
+      sendResult(id, {
+        started: true,
+        interval,
+        trackChanges,
+        timestamp: Date.now(),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Stop monitoring storage
+  function stopStorageMonitoring(id) {
+    try {
+      if (storageInterval) {
+        clearInterval(storageInterval);
+        storageInterval = null;
+      }
+      storageMonitoringActive = false;
+
+      sendResult(id, {
+        stopped: true,
+        capturedChanges: storageLog.length,
+        timestamp: Date.now(),
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Get storage change log
+  function getStorageLog(id, options = {}) {
+    try {
+      const storageType = options.storageType; // 'localStorage' or 'sessionStorage'
+      const changeType = options.changeType; // 'set', 'remove', 'clear'
+      const key = options.key; // filter by key name
+      const limit = options.limit || storageLog.length;
+      const offset = options.offset || 0;
+
+      let filtered = storageLog;
+
+      // Apply filters
+      if (storageType) {
+        filtered = filtered.filter(e => e.storageType === storageType);
+      }
+      if (changeType) {
+        filtered = filtered.filter(e => e.changeType === changeType);
+      }
+      if (key) {
+        filtered = filtered.filter(e => e.key && e.key.includes(key));
+      }
+
+      const slice = filtered.slice(offset, offset + limit);
+
+      sendResult(id, {
+        changes: slice,
+        total: filtered.length,
+        offset,
+        limit,
+        monitoringActive: storageMonitoringActive,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Clear storage log
+  function clearStorageLog(id) {
+    try {
+      const count = storageLog.length;
+      storageLog.length = 0;
+      sendResult(id, {
+        cleared: count,
+        remaining: storageLog.length,
+        monitoringActive: storageMonitoringActive,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Set storage item
+  function setStorageItem(id, storageType, key, value) {
+    try {
+      const storage = storageType === 'sessionStorage' ? window.sessionStorage : window.localStorage;
+      storage.setItem(key, value);
+
+      sendResult(id, {
+        success: true,
+        storageType,
+        key,
+        valueLength: value.length,
+        newSize: calculateStorageSize(storage).totalSize,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Get storage item
+  function getStorageItem(id, storageType, key) {
+    try {
+      const storage = storageType === 'sessionStorage' ? window.sessionStorage : window.localStorage;
+      const value = storage.getItem(key);
+
+      sendResult(id, {
+        key,
+        value,
+        exists: value !== null,
+        valueLength: value ? value.length : 0,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Remove storage item
+  function removeStorageItem(id, storageType, key) {
+    try {
+      const storage = storageType === 'sessionStorage' ? window.sessionStorage : window.localStorage;
+      const existed = storage.getItem(key) !== null;
+      storage.removeItem(key);
+
+      sendResult(id, {
+        success: true,
+        storageType,
+        key,
+        existed,
+        newSize: calculateStorageSize(storage).totalSize,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Clear storage
+  function clearStorage(id, storageType) {
+    try {
+      const storage = storageType === 'sessionStorage' ? window.sessionStorage : window.localStorage;
+      const itemCount = storage.length;
+      storage.clear();
+
+      sendResult(id, {
+        success: true,
+        storageType,
+        clearedItems: itemCount,
+        newSize: 0,
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Helper: Calculate storage size
+  function calculateStorageSize(storage) {
+    let totalSize = 0;
+    const items = [];
+
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      const value = storage.getItem(key);
+      const size = (key.length + value.length) * 2; // UTF-16 encoding (2 bytes per char)
+
+      totalSize += size;
+      items.push({
+        key,
+        sizeBytes: size,
+        sizeKB: Math.round(size / 1024),
+        valueLength: value.length,
+      });
+    }
+
+    // Estimate quota (typically 5-10MB for localStorage, varies by browser)
+    const estimatedQuota = 5 * 1024 * 1024; // 5MB estimate
+    const percentUsed = Math.round((totalSize / estimatedQuota) * 100);
+
+    return {
+      totalSize,
+      quota: estimatedQuota,
+      percentUsed,
+      items: items.sort((a, b) => b.sizeBytes - a.sizeBytes), // Sort by size descending
+    };
+  }
+
+  // Helper: Capture storage snapshot
+  function captureStorageSnapshot(storage, storageType) {
+    const snapshot = {};
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      snapshot[key] = storage.getItem(key);
+    }
+    return snapshot;
+  }
+
+  // Helper: Detect storage changes
+  function detectStorageChanges(before, after) {
+    const changes = [];
+    const timestamp = Date.now();
+
+    // Check localStorage
+    const localChanges = compareStorageSnapshots(
+      before.localStorage,
+      after.localStorage,
+      'localStorage',
+      timestamp
+    );
+    changes.push(...localChanges);
+
+    // Check sessionStorage
+    const sessionChanges = compareStorageSnapshots(
+      before.sessionStorage,
+      after.sessionStorage,
+      'sessionStorage',
+      timestamp
+    );
+    changes.push(...sessionChanges);
+
+    return changes;
+  }
+
+  // Helper: Compare storage snapshots
+  function compareStorageSnapshots(before, after, storageType, timestamp) {
+    const changes = [];
+    const allKeys = new Set([...Object.keys(before), ...Object.keys(after)]);
+
+    for (const key of allKeys) {
+      const beforeValue = before[key];
+      const afterValue = after[key];
+
+      if (beforeValue === undefined && afterValue !== undefined) {
+        // Item added
+        changes.push({
+          storageType,
+          changeType: 'set',
+          key,
+          oldValue: null,
+          newValue: truncateString(afterValue, 200),
+          valueLength: afterValue.length,
+          timestamp,
+        });
+      } else if (beforeValue !== undefined && afterValue === undefined) {
+        // Item removed
+        changes.push({
+          storageType,
+          changeType: 'remove',
+          key,
+          oldValue: truncateString(beforeValue, 200),
+          newValue: null,
+          timestamp,
+        });
+      } else if (beforeValue !== afterValue) {
+        // Item modified
+        changes.push({
+          storageType,
+          changeType: 'set',
+          key,
+          oldValue: truncateString(beforeValue, 200),
+          newValue: truncateString(afterValue, 200),
+          valueLength: afterValue.length,
+          timestamp,
+        });
+      }
+    }
+
+    return changes;
+  }
+
+  // Helper: Add to storage log
+  function addToStorageLog(entry) {
+    storageLog.push(entry);
+    // Limit log size (FIFO)
+    if (storageLog.length > MAX_STORAGE_LOG_SIZE) {
+      storageLog.shift();
+    }
+  }
+
   // Cleanup on page unload
   window.addEventListener("beforeunload", function () {
     stopHeartbeat();
@@ -3993,6 +4374,10 @@
       mutationObserver = null;
     }
     stopAllPerformanceObservers();
+    if (storageInterval) {
+      clearInterval(storageInterval);
+      storageInterval = null;
+    }
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
