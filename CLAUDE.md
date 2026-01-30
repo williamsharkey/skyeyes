@@ -45,6 +45,12 @@ package.json    # Metadata only (no build step)
 - **Visibility detection** — check if elements are visible and interactable
 - **Selector generation** — auto-generate unique CSS selectors for elements
 
+### Production Features
+- **Structured errors** — detailed error objects with stack traces, timestamps, and error types
+- **Batch commands** — execute multiple commands in sequence with individual result tracking
+- **File transfer** — upload/download files to/from browser OS VFS (Shiro/Foam)
+- **Error recovery** — graceful handling of errors with detailed context
+
 ## API (from a Claude worker's perspective)
 
 Workers interact with skyeyes through Nimbus REST endpoints:
@@ -94,6 +100,16 @@ curl -X POST localhost:7777/api/skyeyes/shiro/exec \
 curl -X POST localhost:7777/api/skyeyes/shiro/exec \
   -H 'Content-Type: application/json' \
   -d '{"code":"const input = document.querySelector(\"input\"); input.value = \"test\"; input.dispatchEvent(new Event(\"input\")); return {value: input.value}"}'
+
+# Production: Batch command execution
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"const cmds = [\"return 1+1\", \"return 2*3\", \"return Math.pow(2,8)\"]; const results = cmds.map(c => ({result: eval(c)})); return {count: results.length, results};"}'
+
+# Production: Error with stack trace
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"throw new Error(\"Detailed error with context\")"}'
 ```
 
 ## Cross-Project Integration
@@ -159,9 +175,13 @@ Run the end-to-end test suites:
 # Spirit integration tests
 ./test-spirit-integration.sh
 
+# Production features tests
+./test-production-features.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
+./test-production-features.sh http://localhost:8080
 ```
 
 ### Core Test Suite (`test-skyeyes.sh`)
@@ -192,3 +212,21 @@ Validates:
 - Window and document dimensions
 - HTML serialization
 - CSS selector generation
+
+### Production Features Test Suite (`test-production-features.sh`)
+Validates:
+- Structured error recovery with stack traces
+- Error object structure (name, type, message, timestamp)
+- Runtime error handling (undefined properties)
+- Syntax error handling
+- Promise rejection errors
+- Successful operations (no error cases)
+- Sequential command execution
+- Error recovery in sequences
+- Complex object serialization
+- Array operations
+- Clear error messages
+- Error timestamps
+- Mixed success/failure handling
+- Empty/undefined result handling
+- Console error forwarding

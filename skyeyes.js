@@ -102,6 +102,12 @@
           elementType(msg.id, msg.selector, msg.text, msg.options);
         } else if (msg.type === "element_scroll") {
           elementScroll(msg.id, msg.selector, msg.options);
+        } else if (msg.type === "batch_eval") {
+          executeBatchEval(msg.id, msg.commands, msg.timeout);
+        } else if (msg.type === "file_upload") {
+          fileUpload(msg.id, msg.path, msg.content, msg.options);
+        } else if (msg.type === "file_download") {
+          fileDownload(msg.id, msg.path);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -200,14 +206,14 @@
             sendResult(id, serialize(resolved), null);
           })
           .catch((err) => {
-            sendResult(id, null, String(err));
+            sendResult(id, null, serializeError(err));
           });
         return;
       }
 
       result = serialize(result);
     } catch (err) {
-      error = String(err);
+      error = serializeError(err);
     }
 
     sendResult(id, result, error);
@@ -226,6 +232,29 @@
       return JSON.stringify(value, null, 2);
     } catch {
       return String(value);
+    }
+  }
+
+  function serializeError(err) {
+    // Create structured error with stack trace
+    const errorObj = {
+      message: err.message || String(err),
+      name: err.name || 'Error',
+      stack: err.stack || null,
+      type: err.constructor?.name || 'Error',
+      timestamp: Date.now(),
+    };
+
+    // Add additional error properties if available
+    if (err.fileName) errorObj.fileName = err.fileName;
+    if (err.lineNumber) errorObj.lineNumber = err.lineNumber;
+    if (err.columnNumber) errorObj.columnNumber = err.columnNumber;
+
+    // Return as JSON string for sendResult
+    try {
+      return JSON.stringify(errorObj);
+    } catch {
+      return String(err);
     }
   }
 
@@ -698,6 +727,159 @@
       && style.opacity !== '0'
       && rect.width > 0
       && rect.height > 0;
+  }
+
+  // Batch command execution - execute multiple commands in sequence
+  async function executeBatchEval(id, commands, timeout) {
+    if (!Array.isArray(commands)) {
+      sendResult(id, null, serializeError(new Error('Commands must be an array')));
+      return;
+    }
+
+    const results = [];
+    const timeoutMs = timeout || 30000;
+    const startTime = Date.now();
+
+    try {
+      for (let i = 0; i < commands.length; i++) {
+        const cmd = commands[i];
+
+        // Check if we've exceeded timeout
+        if (Date.now() - startTime > timeoutMs) {
+          results.push({
+            index: i,
+            code: cmd,
+            result: null,
+            error: serializeError(new Error(`Batch timeout after ${timeoutMs}ms at command ${i}`)),
+            skipped: true
+          });
+          break;
+        }
+
+        try {
+          const result = new Function(cmd)();
+
+          // Handle promises
+          if (result && typeof result.then === "function") {
+            const remainingTime = timeoutMs - (Date.now() - startTime);
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error(`Command ${i} timeout`)), remainingTime);
+            });
+
+            const resolved = await Promise.race([result, timeoutPromise]);
+            results.push({
+              index: i,
+              code: cmd.substring(0, 100),
+              result: serialize(resolved),
+              error: null,
+              duration: Date.now() - startTime
+            });
+          } else {
+            results.push({
+              index: i,
+              code: cmd.substring(0, 100),
+              result: serialize(result),
+              error: null,
+              duration: Date.now() - startTime
+            });
+          }
+        } catch (err) {
+          results.push({
+            index: i,
+            code: cmd.substring(0, 100),
+            result: null,
+            error: serializeError(err),
+            duration: Date.now() - startTime
+          });
+
+          // Stop on error unless continueOnError is set
+          if (!commands[i].continueOnError) {
+            break;
+          }
+        }
+      }
+
+      sendResult(id, {
+        totalCommands: commands.length,
+        executedCommands: results.length,
+        results,
+        totalDuration: Date.now() - startTime
+      }, null);
+
+    } catch (err) {
+      sendResult(id, {
+        totalCommands: commands.length,
+        executedCommands: results.length,
+        results,
+        totalDuration: Date.now() - startTime
+      }, serializeError(err));
+    }
+  }
+
+  // File upload - write file to browser filesystem (Shiro/Foam VFS)
+  async function fileUpload(id, path, content, options = {}) {
+    try {
+      // Try to access VFS from Shiro or Foam
+      const vfs = window.shiro?.vfs || window.foam?.shell?.vfs;
+
+      if (!vfs) {
+        sendResult(id, null, serializeError(new Error('No VFS available (not in Shiro/Foam)')));
+        return;
+      }
+
+      // Decode base64 content if specified
+      let fileContent = content;
+      if (options.encoding === 'base64') {
+        fileContent = atob(content);
+      }
+
+      // Write file to VFS
+      const resolvedPath = vfs.resolvePath(path);
+      await vfs.writeFile(resolvedPath, fileContent);
+
+      sendResult(id, {
+        success: true,
+        path: resolvedPath,
+        size: fileContent.length,
+        encoding: options.encoding || 'utf8',
+        timestamp: Date.now()
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // File download - read file from browser filesystem (Shiro/Foam VFS)
+  async function fileDownload(id, path) {
+    try {
+      // Try to access VFS from Shiro or Foam
+      const vfs = window.shiro?.vfs || window.foam?.shell?.vfs;
+
+      if (!vfs) {
+        sendResult(id, null, serializeError(new Error('No VFS available (not in Shiro/Foam)')));
+        return;
+      }
+
+      // Read file from VFS
+      const resolvedPath = vfs.resolvePath(path);
+      const content = await vfs.readFile(resolvedPath);
+
+      // Try to determine if binary content
+      const isBinary = content.some ? content.some(byte => byte === 0) : false;
+
+      sendResult(id, {
+        success: true,
+        path: resolvedPath,
+        content: isBinary ? btoa(content) : content,
+        encoding: isBinary ? 'base64' : 'utf8',
+        size: content.length,
+        timestamp: Date.now()
+      }, null);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
   }
 
   // Cleanup on page unload
