@@ -44,6 +44,7 @@ package.json    # Metadata only (no build step)
 ### Spirit Integration (UI Automation)
 - **DOM snapshot** — capture full page HTML, viewport info, and computed styles
 - **Visual snapshot** — capture page visual state as structured description (DOM tree, visible text, layout zones, interactive elements)
+- **Page state diffing** — capture snapshots and compute diffs to track DOM changes (added, removed, modified elements)
 - **CSS selector queries** — find elements with detailed metadata (rect, visibility, attributes)
 - **Element interaction** — click, type, and scroll commands for UI automation
 - **Clipboard operations** — paste text into input fields, textareas, and contenteditable elements
@@ -52,6 +53,7 @@ package.json    # Metadata only (no build step)
 - **Visibility detection** — check if elements are visible and interactable
 - **Selector generation** — auto-generate unique CSS selectors for elements
 - **Layout analysis** — automatic detection of header, sidebar, main content, footer zones
+- **Change tracking** — detect added, removed, modified elements with detailed change information
 
 ### Production Features
 - **Structured errors** — detailed error objects with stack traces, timestamps, and error types
@@ -232,6 +234,9 @@ Run the end-to-end test suites:
 # Visual snapshot tests
 ./test-visual-snapshot.sh
 
+# Page diff tests
+./test-page-diff.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -369,3 +374,20 @@ Validates:
 - Timing data tracking
 - Device pixel ratio
 - Element selectors in interactive elements
+
+### Page Diff Test Suite (`test-page-diff.sh`)
+Validates:
+- Snapshot capture (with auto-generated and custom IDs)
+- Snapshot timestamp inclusion
+- Element count tracking
+- Capture options (includeText, maxElements)
+- Snapshot listing (count, metadata)
+- Diff computation between snapshots
+- Diff summary (totalChanges, addedCount, removedCount, modifiedCount)
+- Change arrays (added, removed, modified)
+- Time delta calculation
+- Clear specific snapshot
+- Clear all snapshots
+- Error handling for missing snapshots
+- Snapshot storage (auto-cleanup after 10)
+- Element path generation for identification

@@ -154,6 +154,14 @@
           elementFocus(msg.id, msg.selector);
         } else if (msg.type === "visual_snapshot") {
           getVisualSnapshot(msg.id, msg.options);
+        } else if (msg.type === "snapshot_capture") {
+          captureSnapshot(msg.id, msg.snapshotId, msg.options);
+        } else if (msg.type === "snapshot_diff") {
+          computeSnapshotDiff(msg.id, msg.beforeId, msg.afterId);
+        } else if (msg.type === "snapshot_list") {
+          listSnapshots(msg.id);
+        } else if (msg.type === "snapshot_clear") {
+          clearSnapshots(msg.id, msg.snapshotId);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -1965,6 +1973,433 @@
     }
 
     return zones;
+  }
+
+  // Page State Diffing System - Track DOM changes between snapshots
+
+  // Snapshot storage
+  const snapshots = new Map();
+  let snapshotCounter = 0;
+
+  // Capture a lightweight DOM snapshot for diffing
+  function captureSnapshot(id, snapshotId, options = {}) {
+    const startTime = Date.now();
+    healthMetrics.executions.dom.count++;
+
+    try {
+      const autoId = snapshotId || `snapshot-${++snapshotCounter}`;
+      const includeText = options.includeText !== false; // default true
+      const includeAttributes = options.includeAttributes !== false; // default true
+      const maxElements = options.maxElements || 500;
+
+      // Build lightweight snapshot
+      const snapshot = {
+        id: autoId,
+        timestamp: Date.now(),
+        tree: buildSnapshotTree(document.body, includeText, includeAttributes, maxElements),
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          scrollX: window.scrollX,
+          scrollY: window.scrollY,
+        },
+        url: location.href,
+        title: document.title,
+      };
+
+      // Store snapshot
+      snapshots.set(autoId, snapshot);
+
+      // Limit snapshot storage (keep last 10)
+      if (snapshots.size > 10) {
+        const firstKey = snapshots.keys().next().value;
+        snapshots.delete(firstKey);
+      }
+
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+
+      sendResultWithTiming(id, {
+        snapshotId: autoId,
+        timestamp: snapshot.timestamp,
+        elementCount: countElements(snapshot.tree),
+        stored: true,
+      }, null, startTime);
+
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+      healthMetrics.executions.dom.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, serializeError(err), startTime);
+    }
+  }
+
+  // Compute diff between two snapshots
+  function computeSnapshotDiff(id, beforeId, afterId) {
+    const startTime = Date.now();
+    healthMetrics.executions.dom.count++;
+
+    try {
+      const before = snapshots.get(beforeId);
+      const after = snapshots.get(afterId);
+
+      if (!before) {
+        sendResultWithTiming(id, null, serializeError(new Error(`Snapshot '${beforeId}' not found`)), startTime);
+        return;
+      }
+
+      if (!after) {
+        sendResultWithTiming(id, null, serializeError(new Error(`Snapshot '${afterId}' not found`)), startTime);
+        return;
+      }
+
+      // Compute diff
+      const diff = computeTreeDiff(before.tree, after.tree);
+
+      // Detect viewport changes
+      const viewportChanged =
+        before.viewport.scrollX !== after.viewport.scrollX ||
+        before.viewport.scrollY !== after.viewport.scrollY ||
+        before.viewport.width !== after.viewport.width ||
+        before.viewport.height !== after.viewport.height;
+
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+
+      sendResultWithTiming(id, {
+        beforeId,
+        afterId,
+        beforeTimestamp: before.timestamp,
+        afterTimestamp: after.timestamp,
+        timeDelta: after.timestamp - before.timestamp,
+        added: diff.added,
+        removed: diff.removed,
+        modified: diff.modified,
+        unchanged: diff.unchanged,
+        viewportChanged,
+        viewportDiff: viewportChanged ? {
+          before: before.viewport,
+          after: after.viewport,
+        } : null,
+        urlChanged: before.url !== after.url,
+        titleChanged: before.title !== after.title,
+        summary: {
+          totalChanges: diff.added.length + diff.removed.length + diff.modified.length,
+          addedCount: diff.added.length,
+          removedCount: diff.removed.length,
+          modifiedCount: diff.modified.length,
+          unchangedCount: diff.unchanged,
+        }
+      }, null, startTime);
+
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+      healthMetrics.executions.dom.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, serializeError(err), startTime);
+    }
+  }
+
+  // List all stored snapshots
+  function listSnapshots(id) {
+    try {
+      const list = Array.from(snapshots.values()).map(snap => ({
+        id: snap.id,
+        timestamp: snap.timestamp,
+        url: snap.url,
+        title: snap.title,
+        elementCount: countElements(snap.tree),
+        viewport: snap.viewport,
+      }));
+
+      sendResult(id, {
+        count: list.length,
+        snapshots: list,
+        maxSnapshots: 10,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Clear snapshots
+  function clearSnapshots(id, snapshotId) {
+    try {
+      if (snapshotId) {
+        // Clear specific snapshot
+        const existed = snapshots.has(snapshotId);
+        snapshots.delete(snapshotId);
+        sendResult(id, {
+          cleared: existed ? 1 : 0,
+          snapshotId,
+          remaining: snapshots.size,
+        }, null);
+      } else {
+        // Clear all snapshots
+        const count = snapshots.size;
+        snapshots.clear();
+        snapshotCounter = 0;
+        sendResult(id, {
+          cleared: count,
+          remaining: 0,
+        }, null);
+      }
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Helper: Build lightweight snapshot tree for diffing
+  function buildSnapshotTree(element, includeText, includeAttributes, maxElements, count = { value: 0 }) {
+    if (!element || count.value >= maxElements) {
+      return null;
+    }
+
+    count.value++;
+
+    const node = {
+      tag: element.tagName?.toLowerCase() || 'unknown',
+      id: element.id || null,
+      classes: element.className && typeof element.className === 'string'
+        ? element.className.trim().split(/\s+/).filter(c => c)
+        : [],
+    };
+
+    // Add text content if requested
+    if (includeText) {
+      const text = getElementText(element);
+      if (text) node.text = text;
+    }
+
+    // Add attributes if requested
+    if (includeAttributes) {
+      const attrs = {};
+      for (const attr of element.attributes || []) {
+        if (attr.name !== 'class' && attr.name !== 'id') {
+          attrs[attr.name] = attr.value;
+        }
+      }
+      if (Object.keys(attrs).length > 0) {
+        node.attrs = attrs;
+      }
+    }
+
+    // Add value for form elements
+    if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT') {
+      node.value = element.value;
+    }
+
+    // Generate path for identification
+    node.path = generateElementPath(element);
+
+    // Recursively build children
+    if (element.children && element.children.length > 0) {
+      const children = [];
+      for (const child of element.children) {
+        if (count.value >= maxElements) break;
+        const childNode = buildSnapshotTree(child, includeText, includeAttributes, maxElements, count);
+        if (childNode) {
+          children.push(childNode);
+        }
+      }
+      if (children.length > 0) {
+        node.children = children;
+      }
+    }
+
+    return node;
+  }
+
+  // Helper: Generate unique path for element
+  function generateElementPath(element) {
+    const path = [];
+    let current = element;
+
+    while (current && current !== document.body) {
+      let selector = current.tagName?.toLowerCase() || 'unknown';
+
+      if (current.id) {
+        selector += '#' + current.id;
+        path.unshift(selector);
+        break; // ID is unique, no need to go further
+      }
+
+      // Add nth-child for disambiguation
+      if (current.parentElement) {
+        const siblings = Array.from(current.parentElement.children);
+        const index = siblings.indexOf(current);
+        if (siblings.length > 1) {
+          selector += `:nth-child(${index + 1})`;
+        }
+      }
+
+      path.unshift(selector);
+      current = current.parentElement;
+
+      // Limit path depth
+      if (path.length >= 10) break;
+    }
+
+    return path.join(' > ');
+  }
+
+  // Helper: Compute diff between two trees
+  function computeTreeDiff(before, after) {
+    const added = [];
+    const removed = [];
+    const modified = [];
+    let unchanged = 0;
+
+    // Create maps for faster lookup
+    const beforeMap = new Map();
+    const afterMap = new Map();
+
+    // Flatten trees into maps
+    flattenTree(before, beforeMap);
+    flattenTree(after, afterMap);
+
+    // Find removed elements
+    for (const [path, node] of beforeMap) {
+      if (!afterMap.has(path)) {
+        removed.push({
+          path,
+          tag: node.tag,
+          id: node.id,
+          classes: node.classes,
+          text: node.text?.substring(0, 100),
+        });
+      }
+    }
+
+    // Find added and modified elements
+    for (const [path, afterNode] of afterMap) {
+      const beforeNode = beforeMap.get(path);
+
+      if (!beforeNode) {
+        // Element was added
+        added.push({
+          path,
+          tag: afterNode.tag,
+          id: afterNode.id,
+          classes: afterNode.classes,
+          text: afterNode.text?.substring(0, 100),
+          value: afterNode.value,
+        });
+      } else {
+        // Check if element was modified
+        const changes = compareNodes(beforeNode, afterNode);
+        if (changes.length > 0) {
+          modified.push({
+            path,
+            tag: afterNode.tag,
+            id: afterNode.id,
+            changes,
+          });
+        } else {
+          unchanged++;
+        }
+      }
+    }
+
+    return { added, removed, modified, unchanged };
+  }
+
+  // Helper: Flatten tree into map for easier comparison
+  function flattenTree(node, map, prefix = '') {
+    if (!node) return;
+
+    const path = node.path || prefix;
+    map.set(path, node);
+
+    if (node.children) {
+      for (let i = 0; i < node.children.length; i++) {
+        flattenTree(node.children[i], map, `${path}[${i}]`);
+      }
+    }
+  }
+
+  // Helper: Compare two nodes and return list of changes
+  function compareNodes(before, after) {
+    const changes = [];
+
+    // Check text changes
+    if (before.text !== after.text) {
+      changes.push({
+        field: 'text',
+        before: before.text?.substring(0, 100),
+        after: after.text?.substring(0, 100),
+      });
+    }
+
+    // Check value changes (for form elements)
+    if (before.value !== after.value) {
+      changes.push({
+        field: 'value',
+        before: before.value,
+        after: after.value,
+      });
+    }
+
+    // Check class changes
+    const beforeClasses = new Set(before.classes || []);
+    const afterClasses = new Set(after.classes || []);
+    const addedClasses = [...afterClasses].filter(c => !beforeClasses.has(c));
+    const removedClasses = [...beforeClasses].filter(c => !afterClasses.has(c));
+
+    if (addedClasses.length > 0 || removedClasses.length > 0) {
+      changes.push({
+        field: 'classes',
+        added: addedClasses,
+        removed: removedClasses,
+      });
+    }
+
+    // Check attribute changes
+    if (before.attrs || after.attrs) {
+      const beforeAttrs = before.attrs || {};
+      const afterAttrs = after.attrs || {};
+      const attrChanges = [];
+
+      // Find changed/removed attributes
+      for (const [key, beforeVal] of Object.entries(beforeAttrs)) {
+        const afterVal = afterAttrs[key];
+        if (afterVal === undefined) {
+          attrChanges.push({ attr: key, before: beforeVal, after: null });
+        } else if (beforeVal !== afterVal) {
+          attrChanges.push({ attr: key, before: beforeVal, after: afterVal });
+        }
+      }
+
+      // Find added attributes
+      for (const [key, afterVal] of Object.entries(afterAttrs)) {
+        if (beforeAttrs[key] === undefined) {
+          attrChanges.push({ attr: key, before: null, after: afterVal });
+        }
+      }
+
+      if (attrChanges.length > 0) {
+        changes.push({
+          field: 'attributes',
+          changes: attrChanges,
+        });
+      }
+    }
+
+    return changes;
+  }
+
+  // Helper: Count elements in tree
+  function countElements(node) {
+    if (!node) return 0;
+    let count = 1;
+    if (node.children) {
+      for (const child of node.children) {
+        count += countElements(child);
+      }
+    }
+    return count;
   }
 
   // Cleanup on page unload
