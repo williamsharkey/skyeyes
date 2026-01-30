@@ -44,6 +44,7 @@ package.json    # Metadata only (no build step)
 ### Spirit Integration (UI Automation)
 - **DOM snapshot** — capture full page HTML, viewport info, and computed styles
 - **Visual snapshot** — capture page visual state as structured description (DOM tree, visible text, layout zones, interactive elements)
+- **Accessibility tree** — AI-friendly semantic page structure (roles, names, states, landmarks, headings, forms, navigation)
 - **Page state diffing** — capture snapshots and compute diffs to track DOM changes (added, removed, modified elements)
 - **CSS selector queries** — find elements with detailed metadata (rect, visibility, attributes)
 - **Element interaction** — click, type, and scroll commands for UI automation
@@ -54,6 +55,7 @@ package.json    # Metadata only (no build step)
 - **Selector generation** — auto-generate unique CSS selectors for elements
 - **Layout analysis** — automatic detection of header, sidebar, main content, footer zones
 - **Change tracking** — detect added, removed, modified elements with detailed change information
+- **Semantic understanding** — ARIA roles, accessible names, states, and landmarks for navigation
 
 ### Production Features
 - **Structured errors** — detailed error objects with stack traces, timestamps, and error types
@@ -237,6 +239,9 @@ Run the end-to-end test suites:
 # Page diff tests
 ./test-page-diff.sh
 
+# Accessibility tree tests
+./test-accessibility-tree.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -391,3 +396,21 @@ Validates:
 - Error handling for missing snapshots
 - Snapshot storage (auto-cleanup after 10)
 - Element path generation for identification
+
+### Accessibility Tree Test Suite (`test-accessibility-tree.sh`)
+Validates:
+- Basic accessibility tree extraction
+- Tree node structure (role, tag, depth)
+- Landmarks extraction (banner, navigation, main, etc.)
+- Headings extraction with hierarchy
+- Interactive elements detection
+- Forms extraction with field details
+- Navigation menu extraction
+- Metadata inclusion (title, url, lang, dir)
+- maxDepth option handling
+- includePositions option handling
+- Element selectors generation
+- ARIA states and properties
+- Timing data tracking
+- Timestamp inclusion
+- Tree depth tracking

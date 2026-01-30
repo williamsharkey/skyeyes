@@ -162,6 +162,8 @@
           listSnapshots(msg.id);
         } else if (msg.type === "snapshot_clear") {
           clearSnapshots(msg.id, msg.snapshotId);
+        } else if (msg.type === "accessibility_tree") {
+          getAccessibilityTree(msg.id, msg.options);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -2400,6 +2402,538 @@
       }
     }
     return count;
+  }
+
+  // Accessibility Tree Extraction - AI-friendly page structure
+
+  function getAccessibilityTree(id, options = {}) {
+    const startTime = Date.now();
+    healthMetrics.executions.dom.count++;
+
+    try {
+      const maxDepth = options.maxDepth || 20;
+      const includeHidden = options.includeHidden || false;
+      const includePositions = options.includePositions !== false; // default true
+
+      // Build accessibility tree
+      const tree = buildAccessibilityTree(document.body, 0, maxDepth, includeHidden, includePositions);
+
+      // Extract landmarks
+      const landmarks = extractLandmarks();
+
+      // Extract headings in order
+      const headings = extractHeadings();
+
+      // Extract all interactive elements with roles
+      const interactive = extractInteractiveWithRoles();
+
+      // Extract forms and form fields
+      const forms = extractForms();
+
+      // Extract navigation elements
+      const navigation = extractNavigation();
+
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+
+      sendResultWithTiming(id, {
+        tree,
+        landmarks,
+        headings,
+        interactive,
+        forms,
+        navigation,
+        metadata: {
+          title: document.title,
+          url: location.href,
+          lang: document.documentElement.lang || null,
+          dir: document.documentElement.dir || 'ltr',
+        },
+        timestamp: Date.now(),
+      }, null, startTime);
+
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+      healthMetrics.executions.dom.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, serializeError(err), startTime);
+    }
+  }
+
+  // Helper: Build accessibility tree node
+  function buildAccessibilityTree(element, depth, maxDepth, includeHidden, includePositions) {
+    if (!element || depth > maxDepth) {
+      return null;
+    }
+
+    // Get computed role and name
+    const role = getAccessibleRole(element);
+    const name = getAccessibleName(element);
+    const description = getAccessibleDescription(element);
+
+    // Skip elements without semantic meaning unless they have children
+    const isSemanticallySig = role || name || element.children.length > 0;
+    if (!isSemanticallySig && !includeHidden) {
+      return null;
+    }
+
+    // Check visibility
+    const visible = isElementVisible(element);
+    if (!visible && !includeHidden) {
+      return null;
+    }
+
+    const node = {
+      role: role || 'generic',
+      name: name || null,
+      tag: element.tagName?.toLowerCase(),
+      depth,
+      visible,
+    };
+
+    // Add description if present
+    if (description) {
+      node.description = description;
+    }
+
+    // Add states and properties
+    const states = getAriaStates(element);
+    if (Object.keys(states).length > 0) {
+      node.states = states;
+    }
+
+    // Add position if requested and visible
+    if (includePositions && visible) {
+      const rect = element.getBoundingClientRect();
+      node.rect = {
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    }
+
+    // Add interactive properties
+    if (isInteractive(element)) {
+      node.interactive = true;
+      node.focusable = element.tabIndex >= 0 || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(element.tagName);
+    }
+
+    // Add value for form elements
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)) {
+      node.value = element.value;
+      if (element.type) node.inputType = element.type;
+      if (element.placeholder) node.placeholder = element.placeholder;
+      if (element.required) node.required = true;
+    }
+
+    // Add href for links
+    if (element.tagName === 'A' && element.href) {
+      node.href = element.href;
+    }
+
+    // Add level for headings
+    if (element.tagName?.match(/^H[1-6]$/)) {
+      node.level = parseInt(element.tagName[1]);
+    }
+
+    // Add ID and classes for identification
+    if (element.id) node.id = element.id;
+    if (element.className && typeof element.className === 'string') {
+      const classes = element.className.trim().split(/\s+/).filter(c => c);
+      if (classes.length > 0) node.classes = classes.slice(0, 3);
+    }
+
+    // Generate selector for targeting
+    node.selector = generateSelector(element);
+
+    // Recursively build children
+    if (element.children && element.children.length > 0) {
+      const children = [];
+      for (const child of element.children) {
+        const childNode = buildAccessibilityTree(child, depth + 1, maxDepth, includeHidden, includePositions);
+        if (childNode) {
+          children.push(childNode);
+        }
+      }
+      if (children.length > 0) {
+        node.children = children;
+        node.childCount = children.length;
+      }
+    }
+
+    return node;
+  }
+
+  // Helper: Get accessible role
+  function getAccessibleRole(element) {
+    // Explicit ARIA role
+    const ariaRole = element.getAttribute('role');
+    if (ariaRole) return ariaRole;
+
+    // Implicit roles from HTML semantics
+    const tag = element.tagName?.toLowerCase();
+    const roleMap = {
+      'nav': 'navigation',
+      'main': 'main',
+      'header': 'banner',
+      'footer': 'contentinfo',
+      'aside': 'complementary',
+      'section': 'region',
+      'article': 'article',
+      'form': 'form',
+      'button': 'button',
+      'a': element.href ? 'link' : null,
+      'img': 'img',
+      'input': getInputRole(element),
+      'textarea': 'textbox',
+      'select': 'combobox',
+      'h1': 'heading',
+      'h2': 'heading',
+      'h3': 'heading',
+      'h4': 'heading',
+      'h5': 'heading',
+      'h6': 'heading',
+      'ul': 'list',
+      'ol': 'list',
+      'li': 'listitem',
+      'table': 'table',
+      'tr': 'row',
+      'td': 'cell',
+      'th': 'columnheader',
+    };
+
+    return roleMap[tag] || null;
+  }
+
+  // Helper: Get input role based on type
+  function getInputRole(element) {
+    const type = element.type?.toLowerCase();
+    const inputRoleMap = {
+      'checkbox': 'checkbox',
+      'radio': 'radio',
+      'button': 'button',
+      'submit': 'button',
+      'reset': 'button',
+      'search': 'searchbox',
+      'text': 'textbox',
+      'email': 'textbox',
+      'tel': 'textbox',
+      'url': 'textbox',
+      'number': 'spinbutton',
+      'range': 'slider',
+    };
+    return inputRoleMap[type] || 'textbox';
+  }
+
+  // Helper: Get accessible name
+  function getAccessibleName(element) {
+    // aria-label
+    const ariaLabel = element.getAttribute('aria-label');
+    if (ariaLabel) return ariaLabel.trim();
+
+    // aria-labelledby
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const labelEl = document.getElementById(labelledBy);
+      if (labelEl) return labelEl.textContent?.trim();
+    }
+
+    // Associated label (for form elements)
+    if (element.id && ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)) {
+      const label = document.querySelector(`label[for="${element.id}"]`);
+      if (label) return label.textContent?.trim();
+    }
+
+    // Parent label
+    const parentLabel = element.closest('label');
+    if (parentLabel) {
+      return parentLabel.textContent?.trim();
+    }
+
+    // alt attribute (for images)
+    if (element.tagName === 'IMG') {
+      return element.alt?.trim() || null;
+    }
+
+    // title attribute
+    const title = element.getAttribute('title');
+    if (title) return title.trim();
+
+    // placeholder (for inputs)
+    if (element.placeholder) return element.placeholder.trim();
+
+    // Text content for buttons and links
+    if (['BUTTON', 'A'].includes(element.tagName)) {
+      return element.textContent?.trim().substring(0, 100) || null;
+    }
+
+    // Heading text
+    if (element.tagName?.match(/^H[1-6]$/)) {
+      return element.textContent?.trim().substring(0, 200) || null;
+    }
+
+    return null;
+  }
+
+  // Helper: Get accessible description
+  function getAccessibleDescription(element) {
+    // aria-describedby
+    const describedBy = element.getAttribute('aria-describedby');
+    if (describedBy) {
+      const descEl = document.getElementById(describedBy);
+      if (descEl) return descEl.textContent?.trim();
+    }
+
+    // aria-description
+    const ariaDesc = element.getAttribute('aria-description');
+    if (ariaDesc) return ariaDesc.trim();
+
+    return null;
+  }
+
+  // Helper: Get ARIA states and properties
+  function getAriaStates(element) {
+    const states = {};
+
+    // Common ARIA states
+    const ariaAttrs = [
+      'aria-expanded',
+      'aria-selected',
+      'aria-checked',
+      'aria-pressed',
+      'aria-disabled',
+      'aria-readonly',
+      'aria-required',
+      'aria-invalid',
+      'aria-hidden',
+      'aria-current',
+      'aria-live',
+      'aria-atomic',
+      'aria-busy',
+      'aria-haspopup',
+      'aria-level',
+      'aria-valuemin',
+      'aria-valuemax',
+      'aria-valuenow',
+      'aria-valuetext',
+    ];
+
+    for (const attr of ariaAttrs) {
+      const value = element.getAttribute(attr);
+      if (value !== null) {
+        const key = attr.replace('aria-', '');
+        // Convert string booleans to actual booleans
+        if (value === 'true') states[key] = true;
+        else if (value === 'false') states[key] = false;
+        else states[key] = value;
+      }
+    }
+
+    // HTML states
+    if (element.disabled) states.disabled = true;
+    if (element.readOnly) states.readonly = true;
+    if (element.required) states.required = true;
+
+    return states;
+  }
+
+  // Helper: Check if element is interactive
+  function isInteractive(element) {
+    const tag = element.tagName?.toLowerCase();
+    const interactiveTags = ['button', 'a', 'input', 'textarea', 'select'];
+
+    if (interactiveTags.includes(tag)) return true;
+    if (element.onclick) return true;
+    if (element.getAttribute('role') === 'button') return true;
+    if (element.tabIndex >= 0) return true;
+
+    return false;
+  }
+
+  // Helper: Extract landmarks
+  function extractLandmarks() {
+    const landmarks = [];
+    const landmarkRoles = ['banner', 'navigation', 'main', 'complementary', 'contentinfo', 'search', 'form', 'region'];
+
+    // Find elements with landmark roles
+    const landmarkSelectors = landmarkRoles.map(role => `[role="${role}"]`).join(',');
+    const explicitLandmarks = document.querySelectorAll(landmarkSelectors);
+
+    // Also find semantic HTML landmarks
+    const semanticLandmarks = document.querySelectorAll('header, nav, main, aside, footer, section[aria-label], section[aria-labelledby]');
+
+    const allLandmarks = new Set([...explicitLandmarks, ...semanticLandmarks]);
+
+    for (const el of allLandmarks) {
+      if (isElementVisible(el)) {
+        const role = getAccessibleRole(el);
+        const name = getAccessibleName(el);
+
+        landmarks.push({
+          role,
+          name,
+          tag: el.tagName?.toLowerCase(),
+          selector: generateSelector(el),
+          rect: {
+            x: Math.round(el.getBoundingClientRect().left + window.scrollX),
+            y: Math.round(el.getBoundingClientRect().top + window.scrollY),
+            width: Math.round(el.getBoundingClientRect().width),
+            height: Math.round(el.getBoundingClientRect().height),
+          }
+        });
+      }
+    }
+
+    return landmarks;
+  }
+
+  // Helper: Extract headings in order
+  function extractHeadings() {
+    const headings = [];
+    const headingElements = document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]');
+
+    for (const el of headingElements) {
+      if (isElementVisible(el)) {
+        let level = 1;
+
+        if (el.tagName?.match(/^H[1-6]$/)) {
+          level = parseInt(el.tagName[1]);
+        } else {
+          const ariaLevel = el.getAttribute('aria-level');
+          if (ariaLevel) level = parseInt(ariaLevel);
+        }
+
+        headings.push({
+          level,
+          text: el.textContent?.trim().substring(0, 200),
+          tag: el.tagName?.toLowerCase(),
+          selector: generateSelector(el),
+          rect: {
+            x: Math.round(el.getBoundingClientRect().left + window.scrollX),
+            y: Math.round(el.getBoundingClientRect().top + window.scrollY),
+          }
+        });
+      }
+    }
+
+    return headings;
+  }
+
+  // Helper: Extract interactive elements with roles
+  function extractInteractiveWithRoles() {
+    const interactive = [];
+    const selectors = [
+      'button',
+      'a[href]',
+      'input',
+      'textarea',
+      'select',
+      '[role="button"]',
+      '[role="link"]',
+      '[role="checkbox"]',
+      '[role="radio"]',
+      '[role="switch"]',
+      '[role="tab"]',
+      '[role="menuitem"]',
+      '[tabindex]',
+    ];
+
+    const elements = document.querySelectorAll(selectors.join(','));
+
+    for (const el of elements) {
+      if (isElementVisible(el)) {
+        const role = getAccessibleRole(el);
+        const name = getAccessibleName(el);
+        const states = getAriaStates(el);
+
+        interactive.push({
+          role,
+          name,
+          tag: el.tagName?.toLowerCase(),
+          states,
+          selector: generateSelector(el),
+          focusable: el.tabIndex >= 0 || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(el.tagName),
+        });
+      }
+    }
+
+    return interactive;
+  }
+
+  // Helper: Extract forms and form fields
+  function extractForms() {
+    const forms = [];
+    const formElements = document.querySelectorAll('form');
+
+    for (const form of formElements) {
+      if (isElementVisible(form)) {
+        const fields = [];
+
+        // Find all form fields
+        const inputs = form.querySelectorAll('input, textarea, select');
+        for (const input of inputs) {
+          if (isElementVisible(input)) {
+            fields.push({
+              role: getAccessibleRole(input),
+              name: getAccessibleName(input),
+              tag: input.tagName?.toLowerCase(),
+              type: input.type || null,
+              value: input.value || null,
+              placeholder: input.placeholder || null,
+              required: input.required || false,
+              selector: generateSelector(input),
+            });
+          }
+        }
+
+        forms.push({
+          name: getAccessibleName(form),
+          action: form.action || null,
+          method: form.method || 'get',
+          fieldCount: fields.length,
+          fields,
+          selector: generateSelector(form),
+        });
+      }
+    }
+
+    return forms;
+  }
+
+  // Helper: Extract navigation elements
+  function extractNavigation() {
+    const navigation = [];
+    const navElements = document.querySelectorAll('nav, [role="navigation"]');
+
+    for (const nav of navElements) {
+      if (isElementVisible(nav)) {
+        const links = [];
+
+        // Find all links within navigation
+        const linkElements = nav.querySelectorAll('a[href]');
+        for (const link of linkElements) {
+          if (isElementVisible(link)) {
+            links.push({
+              text: link.textContent?.trim().substring(0, 100),
+              href: link.href,
+              current: link.getAttribute('aria-current') || null,
+              selector: generateSelector(link),
+            });
+          }
+        }
+
+        navigation.push({
+          name: getAccessibleName(nav),
+          linkCount: links.length,
+          links,
+          selector: generateSelector(nav),
+        });
+      }
+    }
+
+    return navigation;
   }
 
   // Cleanup on page unload
