@@ -28,6 +28,8 @@ package.json    # Metadata only (no build step)
 - **Terminal execution** — execute shell commands with exit code detection
 - **Exit code detection** — captures command exit codes for proper error handling
 - **Prompt detection** — identifies terminal prompts for readiness checking
+- **Heartbeat/ping mechanism** — 5-second interval pings for immediate disconnect detection
+- **Message queuing** — queues up to 100 messages during disconnect, delivers on reconnect
 - **Console forwarding** — `console.log/warn/error/info` output sent to server
 - **Error capture** — uncaught errors and unhandled rejections forwarded
 - **Auto-reconnect** — reconnects to WebSocket on disconnect (2s delay)
@@ -78,3 +80,29 @@ curl localhost:7777/api/skyeyes/status
 - **`data-page` attribute** on script tag identifies which page this bridge serves
 - **Monkey-patched console** preserves original behavior while forwarding to server
 - **HTMLElement serialization** returns truncated outerHTML (2000 chars max)
+- **Heartbeat every 5s** — pings server to detect disconnects immediately
+- **Message queue (max 100)** — ensures message delivery across reconnections
+
+## Testing
+
+Run the end-to-end test suite:
+
+```bash
+# Ensure Nimbus server is running with skyeyes bridges connected
+./test-skyeyes.sh
+
+# Or specify a different base URL
+./test-skyeyes.sh http://localhost:8080
+```
+
+The test suite validates:
+- Server health and connection status
+- GET and POST eval endpoints
+- Async promise handling
+- Timeout enforcement
+- Error handling
+- DOM manipulation
+- JSON and array serialization
+- Multiple bridge support
+- Type handling (undefined, null, boolean)
+- Window object access

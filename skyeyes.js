@@ -11,7 +11,10 @@
   let ws = null;
   let reconnectTimer = null;
   let isConnecting = false;
+  let heartbeatTimer = null;
+  let messageQueue = [];
   const RECONNECT_DELAY = 2000;
+  const HEARTBEAT_INTERVAL = 5000; // Send ping every 5 seconds
 
   // Monkey-patch console to forward output
   const originalConsole = {
@@ -67,12 +70,21 @@
       isConnecting = false;
       originalConsole.log(`[skyeyes] Connected as "${page}"`);
       ws.send(JSON.stringify({ type: "skyeyes_ready", page }));
+
+      // Start heartbeat
+      startHeartbeat();
+
+      // Send any queued messages
+      flushMessageQueue();
     };
 
     ws.onmessage = function (event) {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === "eval") {
+        if (msg.type === "pong") {
+          // Server acknowledged our ping
+          return;
+        } else if (msg.type === "eval") {
           executeEval(msg.id, msg.code, msg.timeout);
         } else if (msg.type === "terminal_exec") {
           executeTerminalCommand(msg.id, msg.command, msg.timeout);
@@ -88,6 +100,7 @@
 
     ws.onclose = function () {
       isConnecting = false;
+      stopHeartbeat();
       originalConsole.log("[skyeyes] Disconnected, reconnecting...");
       scheduleReconnect();
     };
@@ -104,6 +117,57 @@
       reconnectTimer = null;
       connect();
     }, RECONNECT_DELAY);
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat(); // Clear any existing timer
+    heartbeatTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: "ping", page, timestamp: Date.now() }));
+        } catch (err) {
+          originalConsole.error("[skyeyes] Failed to send ping:", err);
+        }
+      }
+    }, HEARTBEAT_INTERVAL);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function queueMessage(message) {
+    messageQueue.push({
+      message,
+      timestamp: Date.now(),
+    });
+    // Limit queue size to prevent memory issues
+    if (messageQueue.length > 100) {
+      messageQueue.shift(); // Remove oldest message
+    }
+  }
+
+  function flushMessageQueue() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const queue = messageQueue.slice(); // Copy queue
+    messageQueue = []; // Clear original queue
+
+    for (const item of queue) {
+      try {
+        ws.send(JSON.stringify(item.message));
+        originalConsole.log(`[skyeyes] Sent queued message from ${item.timestamp}`);
+      } catch (err) {
+        originalConsole.error("[skyeyes] Failed to send queued message:", err);
+        // Re-queue failed message
+        queueMessage(item.message);
+      }
+    }
   }
 
   function executeEval(id, code, timeout) {
@@ -156,8 +220,19 @@
   }
 
   function sendResult(id, result, error) {
+    const message = { type: "skyeyes_result", id, result, error };
+
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "skyeyes_result", id, result, error }));
+      try {
+        ws.send(JSON.stringify(message));
+      } catch (err) {
+        originalConsole.error("[skyeyes] Failed to send result, queuing:", err);
+        queueMessage(message);
+      }
+    } else {
+      // Queue message for later delivery
+      originalConsole.log("[skyeyes] WebSocket not ready, queuing result");
+      queueMessage(message);
     }
   }
 
@@ -309,6 +384,7 @@
 
   // Cleanup on page unload
   window.addEventListener("beforeunload", function () {
+    stopHeartbeat();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
