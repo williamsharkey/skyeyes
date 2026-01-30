@@ -92,6 +92,16 @@
           readTerminalOutput(msg.id);
         } else if (msg.type === "terminal_status") {
           getTerminalStatus(msg.id);
+        } else if (msg.type === "dom_snapshot") {
+          getDOMSnapshot(msg.id, msg.options);
+        } else if (msg.type === "query_selector") {
+          querySelector(msg.id, msg.selector, msg.all);
+        } else if (msg.type === "element_click") {
+          elementClick(msg.id, msg.selector);
+        } else if (msg.type === "element_type") {
+          elementType(msg.id, msg.selector, msg.text, msg.options);
+        } else if (msg.type === "element_scroll") {
+          elementScroll(msg.id, msg.selector, msg.options);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -380,6 +390,314 @@
       return /user@foam:.*\$\s*$/;
     }
     return null;
+  }
+
+  // Spirit Integration: DOM Snapshot for visual inspection
+  function getDOMSnapshot(id, options = {}) {
+    try {
+      const includeStyles = options.includeStyles !== false; // Default true
+      const includeScripts = options.includeScripts || false; // Default false
+      const maxDepth = options.maxDepth || -1; // -1 = unlimited
+
+      // Capture full HTML
+      const html = document.documentElement.outerHTML;
+
+      // Capture viewport information
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        documentWidth: document.documentElement.scrollWidth,
+        documentHeight: document.documentElement.scrollHeight,
+      };
+
+      // Capture computed styles for visible elements if requested
+      let styles = null;
+      if (includeStyles) {
+        styles = {};
+        const visibleElements = document.querySelectorAll('body *');
+        let count = 0;
+        const maxElements = 1000; // Limit to prevent huge payloads
+
+        for (const el of visibleElements) {
+          if (count >= maxElements) break;
+
+          // Only capture visible elements
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const computedStyle = window.getComputedStyle(el);
+            const selector = generateSelector(el);
+            styles[selector] = {
+              display: computedStyle.display,
+              position: computedStyle.position,
+              width: rect.width,
+              height: rect.height,
+              top: rect.top,
+              left: rect.left,
+              color: computedStyle.color,
+              backgroundColor: computedStyle.backgroundColor,
+              fontSize: computedStyle.fontSize,
+            };
+            count++;
+          }
+        }
+      }
+
+      sendResult(id, {
+        html,
+        viewport,
+        styles,
+        url: location.href,
+        title: document.title,
+        timestamp: Date.now(),
+      }, null);
+    } catch (err) {
+      sendResult(id, null, String(err));
+    }
+  }
+
+  // Spirit Integration: CSS Selector Query
+  function querySelector(id, selector, all = false) {
+    try {
+      if (!selector) {
+        sendResult(id, null, 'No selector provided');
+        return;
+      }
+
+      const elements = all
+        ? Array.from(document.querySelectorAll(selector))
+        : [document.querySelector(selector)].filter(Boolean);
+
+      const results = elements.map(el => ({
+        tag: el.tagName.toLowerCase(),
+        id: el.id || null,
+        classes: Array.from(el.classList),
+        text: el.textContent?.trim().substring(0, 200) || '',
+        html: el.outerHTML.substring(0, 500),
+        attributes: getElementAttributes(el),
+        rect: el.getBoundingClientRect(),
+        visible: isElementVisible(el),
+        selector: generateSelector(el),
+      }));
+
+      sendResult(id, {
+        count: results.length,
+        elements: results,
+        selector,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, String(err));
+    }
+  }
+
+  // Spirit Integration: Click element
+  function elementClick(id, selector) {
+    try {
+      const element = document.querySelector(selector);
+
+      if (!element) {
+        sendResult(id, null, `Element not found: ${selector}`);
+        return;
+      }
+
+      // Scroll element into view first
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Wait a bit for scroll, then click
+      setTimeout(() => {
+        try {
+          // Try multiple click methods for compatibility
+          if (element.click) {
+            element.click();
+          } else {
+            const clickEvent = new MouseEvent('click', {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            });
+            element.dispatchEvent(clickEvent);
+          }
+
+          sendResult(id, {
+            success: true,
+            selector,
+            element: {
+              tag: element.tagName.toLowerCase(),
+              text: element.textContent?.trim().substring(0, 100),
+            }
+          }, null);
+        } catch (clickErr) {
+          sendResult(id, null, String(clickErr));
+        }
+      }, 300);
+
+    } catch (err) {
+      sendResult(id, null, String(err));
+    }
+  }
+
+  // Spirit Integration: Type into element
+  function elementType(id, selector, text, options = {}) {
+    try {
+      const element = document.querySelector(selector);
+
+      if (!element) {
+        sendResult(id, null, `Element not found: ${selector}`);
+        return;
+      }
+
+      // Scroll into view
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      setTimeout(() => {
+        try {
+          // Focus the element
+          element.focus();
+
+          // Clear existing value if requested
+          if (options.clear !== false) {
+            element.value = '';
+          }
+
+          // Type the text
+          if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+            element.value = (options.clear === false ? element.value : '') + text;
+
+            // Trigger input event
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            // For contenteditable elements
+            if (element.isContentEditable) {
+              element.textContent = (options.clear === false ? element.textContent : '') + text;
+              element.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+              sendResult(id, null, 'Element is not typeable');
+              return;
+            }
+          }
+
+          sendResult(id, {
+            success: true,
+            selector,
+            text,
+            value: element.value || element.textContent,
+          }, null);
+        } catch (typeErr) {
+          sendResult(id, null, String(typeErr));
+        }
+      }, 300);
+
+    } catch (err) {
+      sendResult(id, null, String(err));
+    }
+  }
+
+  // Spirit Integration: Scroll element or window
+  function elementScroll(id, selector, options = {}) {
+    try {
+      const x = options.x || 0;
+      const y = options.y || 0;
+      const behavior = options.smooth ? 'smooth' : 'auto';
+
+      if (selector) {
+        const element = document.querySelector(selector);
+        if (!element) {
+          sendResult(id, null, `Element not found: ${selector}`);
+          return;
+        }
+
+        if (options.intoView) {
+          element.scrollIntoView({ behavior, block: options.block || 'center' });
+        } else {
+          element.scrollBy({ left: x, top: y, behavior });
+        }
+
+        sendResult(id, {
+          success: true,
+          selector,
+          scrollPosition: {
+            x: element.scrollLeft,
+            y: element.scrollTop,
+          }
+        }, null);
+      } else {
+        // Scroll window
+        window.scrollBy({ left: x, top: y, behavior });
+
+        sendResult(id, {
+          success: true,
+          scrollPosition: {
+            x: window.scrollX,
+            y: window.scrollY,
+          }
+        }, null);
+      }
+    } catch (err) {
+      sendResult(id, null, String(err));
+    }
+  }
+
+  // Helper: Generate unique CSS selector for an element
+  function generateSelector(element) {
+    if (element.id) {
+      return `#${element.id}`;
+    }
+
+    const path = [];
+    let current = element;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      let selector = current.tagName.toLowerCase();
+
+      if (current.className) {
+        const classes = Array.from(current.classList)
+          .filter(c => c && !c.includes(' '))
+          .slice(0, 2); // Limit classes
+        if (classes.length) {
+          selector += '.' + classes.join('.');
+        }
+      }
+
+      // Add nth-child if needed for uniqueness
+      if (current.parentElement) {
+        const siblings = Array.from(current.parentElement.children);
+        const index = siblings.indexOf(current);
+        if (siblings.length > 1) {
+          selector += `:nth-child(${index + 1})`;
+        }
+      }
+
+      path.unshift(selector);
+      current = current.parentElement;
+
+      // Limit depth to keep selector reasonable
+      if (path.length >= 5) break;
+    }
+
+    return path.join(' > ');
+  }
+
+  // Helper: Get element attributes as object
+  function getElementAttributes(element) {
+    const attrs = {};
+    for (const attr of element.attributes) {
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // Helper: Check if element is visible
+  function isElementVisible(element) {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+
+    return style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && style.opacity !== '0'
+      && rect.width > 0
+      && rect.height > 0;
   }
 
   // Cleanup on page unload

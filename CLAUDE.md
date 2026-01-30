@@ -22,18 +22,28 @@ package.json    # Metadata only (no build step)
 
 ## Capabilities
 
+### Core Features
 - **Execute arbitrary JS** in the page's global scope
 - **Async support** — automatically resolves Promises before returning
 - **Timeout handling** — configurable timeouts for eval and terminal commands (default 30s)
-- **Terminal execution** — execute shell commands with exit code detection
-- **Exit code detection** — captures command exit codes for proper error handling
-- **Prompt detection** — identifies terminal prompts for readiness checking
-- **Heartbeat/ping mechanism** — 5-second interval pings for immediate disconnect detection
-- **Message queuing** — queues up to 100 messages during disconnect, delivers on reconnect
 - **Console forwarding** — `console.log/warn/error/info` output sent to server
 - **Error capture** — uncaught errors and unhandled rejections forwarded
 - **Auto-reconnect** — reconnects to WebSocket on disconnect (2s delay)
+- **Heartbeat/ping mechanism** — 5-second interval pings for immediate disconnect detection
+- **Message queuing** — queues up to 100 messages during disconnect, delivers on reconnect
 - **Serialization** — handles strings, numbers, booleans, HTMLElements (outerHTML), NodeLists, JSON-serializable objects
+
+### Terminal Integration
+- **Terminal execution** — execute shell commands with exit code detection
+- **Exit code detection** — captures command exit codes for proper error handling
+- **Prompt detection** — identifies terminal prompts for readiness checking
+
+### Spirit Integration (UI Automation)
+- **DOM snapshot** — capture full page HTML, viewport info, and computed styles
+- **CSS selector queries** — find elements with detailed metadata (rect, visibility, attributes)
+- **Element interaction** — click, type, and scroll commands for UI automation
+- **Visibility detection** — check if elements are visible and interactable
+- **Selector generation** — auto-generate unique CSS selectors for elements
 
 ## API (from a Claude worker's perspective)
 
@@ -64,6 +74,26 @@ curl -X POST localhost:7777/api/skyeyes/shiro/reload
 
 # Check connection status
 curl localhost:7777/api/skyeyes/status
+
+# Spirit Integration: DOM snapshot
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"return {html: document.documentElement.outerHTML, viewport: {width: window.innerWidth, height: window.innerHeight}, title: document.title}"}'
+
+# Spirit Integration: Query elements
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"const el = document.querySelector(\"button\"); return el ? {tag: el.tagName, text: el.textContent, rect: el.getBoundingClientRect()} : null"}'
+
+# Spirit Integration: Click element
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"document.querySelector(\"button\")?.click(); return {clicked: true}"}'
+
+# Spirit Integration: Type into input
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"const input = document.querySelector(\"input\"); input.value = \"test\"; input.dispatchEvent(new Event(\"input\")); return {value: input.value}"}'
 ```
 
 ## Cross-Project Integration
@@ -83,19 +113,59 @@ curl localhost:7777/api/skyeyes/status
 - **Heartbeat every 5s** — pings server to detect disconnects immediately
 - **Message queue (max 100)** — ensures message delivery across reconnections
 
+## Spirit Integration Details
+
+Skyeyes provides comprehensive UI automation capabilities for Spirit (AI assistant for browser automation):
+
+### DOM Snapshot
+Captures complete page state including:
+- Full HTML document (outerHTML of root element)
+- Viewport dimensions (width, height, scroll position)
+- Document dimensions (scrollWidth, scrollHeight)
+- Computed styles for visible elements (limited to 1000 elements)
+- Current URL and page title
+- Timestamp for tracking state changes
+
+### Element Queries
+Advanced CSS selector queries with metadata:
+- Tag name, ID, classes
+- Text content (truncated to 200 chars)
+- HTML (truncated to 500 chars)
+- All attributes as key-value pairs
+- Bounding rectangle (x, y, width, height)
+- Visibility status (display, visibility, opacity, size)
+- Auto-generated unique CSS selector
+
+### Element Interaction
+**Click**: Scrolls element into view, waits 300ms, triggers click event
+**Type**: Focuses element, optionally clears, types text, triggers input/change events
+**Scroll**: Scroll element or window by x/y offset, or scroll element into view
+
+### Helper Functions
+- `generateSelector()` - Creates unique CSS selector for any element
+- `isElementVisible()` - Checks display, visibility, opacity, and size
+- `getElementAttributes()` - Extracts all attributes as object
+
 ## Testing
 
-Run the end-to-end test suite:
+Run the end-to-end test suites:
 
 ```bash
 # Ensure Nimbus server is running with skyeyes bridges connected
+
+# Core functionality tests
 ./test-skyeyes.sh
+
+# Spirit integration tests
+./test-spirit-integration.sh
 
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
+./test-spirit-integration.sh http://localhost:8080
 ```
 
-The test suite validates:
+### Core Test Suite (`test-skyeyes.sh`)
+Validates:
 - Server health and connection status
 - GET and POST eval endpoints
 - Async promise handling
@@ -106,3 +176,19 @@ The test suite validates:
 - Multiple bridge support
 - Type handling (undefined, null, boolean)
 - Window object access
+
+### Spirit Integration Test Suite (`test-spirit-integration.sh`)
+Validates:
+- DOM snapshot (viewport, dimensions)
+- Element queries (querySelector, querySelectorAll)
+- Element visibility detection
+- Bounding box calculations
+- Attribute extraction
+- Computed styles
+- Text content extraction
+- Class list handling
+- Document structure
+- Scroll position tracking
+- Window and document dimensions
+- HTML serialization
+- CSS selector generation
