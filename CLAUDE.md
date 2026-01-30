@@ -51,6 +51,15 @@ package.json    # Metadata only (no build step)
 - **File transfer** — upload/download files to/from browser OS VFS (Shiro/Foam)
 - **Error recovery** — graceful handling of errors with detailed context
 
+### Performance Monitoring
+- **Timing data** — duration tracking for all eval, terminal, and DOM operations
+- **Health metrics** — uptime, reconnect count, message count, error rates
+- **Latency tracking** — ping/pong round-trip time measurement
+- **Execution stats** — count, total time, average time, error rate per operation type
+- **Diagnostics endpoint** — comprehensive bridge health reporting across all pages
+- **Memory monitoring** — heap usage tracking (when available)
+- **System info** — viewport, user agent, page URL, document state
+
 ## API (from a Claude worker's perspective)
 
 Workers interact with skyeyes through Nimbus REST endpoints:
@@ -110,6 +119,11 @@ curl -X POST localhost:7777/api/skyeyes/shiro/exec \
 curl -X POST localhost:7777/api/skyeyes/shiro/exec \
   -H 'Content-Type: application/json' \
   -d '{"code":"throw new Error(\"Detailed error with context\")"}'
+
+# Performance: Diagnostics endpoint (via eval)
+curl -X POST localhost:7777/api/skyeyes/shiro/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"/* Diagnostics accessible via internal healthMetrics object */"}'
 ```
 
 ## Cross-Project Integration
@@ -178,10 +192,14 @@ Run the end-to-end test suites:
 # Production features tests
 ./test-production-features.sh
 
+# Performance monitoring tests
+./test-performance-monitoring.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
 ./test-production-features.sh http://localhost:8080
+./test-performance-monitoring.sh http://localhost:8080
 ```
 
 ### Core Test Suite (`test-skyeyes.sh`)
@@ -230,3 +248,19 @@ Validates:
 - Mixed success/failure handling
 - Empty/undefined result handling
 - Console error forwarding
+
+### Performance Monitoring Test Suite (`test-performance-monitoring.sh`)
+Validates:
+- Execution count tracking
+- Performance timing measurement
+- Error rate calculation
+- Multiple rapid executions
+- Async/Promise timing
+- Uptime calculation
+- Memory reporting (when available)
+- Viewport information
+- Page information tracking
+- Operation type categorization
+- Sequential timing accuracy
+- High-resolution timing (performance.now)
+- Metric aggregation

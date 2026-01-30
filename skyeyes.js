@@ -16,6 +16,24 @@
   const RECONNECT_DELAY = 2000;
   const HEARTBEAT_INTERVAL = 5000; // Send ping every 5 seconds
 
+  // Performance monitoring and health metrics
+  const healthMetrics = {
+    connectTime: Date.now(),
+    reconnectCount: 0,
+    totalMessages: 0,
+    totalErrors: 0,
+    lastPingTime: null,
+    lastPongTime: null,
+    latency: null,
+    executions: {
+      eval: { count: 0, totalTime: 0, errors: 0 },
+      terminal: { count: 0, totalTime: 0, errors: 0 },
+      dom: { count: 0, totalTime: 0, errors: 0 },
+      batch: { count: 0, totalTime: 0, errors: 0 },
+      file: { count: 0, totalTime: 0, errors: 0 },
+    }
+  };
+
   // Monkey-patch console to forward output
   const originalConsole = {
     log: console.log.bind(console),
@@ -81,8 +99,14 @@
     ws.onmessage = function (event) {
       try {
         const msg = JSON.parse(event.data);
+        healthMetrics.totalMessages++;
+
         if (msg.type === "pong") {
-          // Server acknowledged our ping
+          // Server acknowledged our ping - calculate latency
+          healthMetrics.lastPongTime = Date.now();
+          if (healthMetrics.lastPingTime) {
+            healthMetrics.latency = healthMetrics.lastPongTime - healthMetrics.lastPingTime;
+          }
           return;
         } else if (msg.type === "eval") {
           executeEval(msg.id, msg.code, msg.timeout);
@@ -108,15 +132,19 @@
           fileUpload(msg.id, msg.path, msg.content, msg.options);
         } else if (msg.type === "file_download") {
           fileDownload(msg.id, msg.path);
+        } else if (msg.type === "diagnostics") {
+          getDiagnostics(msg.id);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
+        healthMetrics.totalErrors++;
       }
     };
 
     ws.onclose = function () {
       isConnecting = false;
       stopHeartbeat();
+      healthMetrics.reconnectCount++;
       originalConsole.log("[skyeyes] Disconnected, reconnecting...");
       scheduleReconnect();
     };
@@ -140,7 +168,8 @@
     heartbeatTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(JSON.stringify({ type: "ping", page, timestamp: Date.now() }));
+          healthMetrics.lastPingTime = Date.now();
+          ws.send(JSON.stringify({ type: "ping", page, timestamp: healthMetrics.lastPingTime }));
         } catch (err) {
           originalConsole.error("[skyeyes] Failed to send ping:", err);
         }
@@ -187,6 +216,8 @@
   }
 
   function executeEval(id, code, timeout) {
+    const startTime = Date.now();
+    healthMetrics.executions.eval.count++;
     let result = null;
     let error = null;
 
@@ -203,10 +234,16 @@
 
         Promise.race([result, timeoutPromise])
           .then((resolved) => {
-            sendResult(id, serialize(resolved), null);
+            const duration = Date.now() - startTime;
+            healthMetrics.executions.eval.totalTime += duration;
+            sendResultWithTiming(id, serialize(resolved), null, startTime);
           })
           .catch((err) => {
-            sendResult(id, null, serializeError(err));
+            const duration = Date.now() - startTime;
+            healthMetrics.executions.eval.totalTime += duration;
+            healthMetrics.executions.eval.errors++;
+            healthMetrics.totalErrors++;
+            sendResultWithTiming(id, null, serializeError(err), startTime);
           });
         return;
       }
@@ -214,9 +251,13 @@
       result = serialize(result);
     } catch (err) {
       error = serializeError(err);
+      healthMetrics.executions.eval.errors++;
+      healthMetrics.totalErrors++;
     }
 
-    sendResult(id, result, error);
+    const duration = Date.now() - startTime;
+    healthMetrics.executions.eval.totalTime += duration;
+    sendResultWithTiming(id, result, error, startTime);
   }
 
   function serialize(value) {
@@ -259,7 +300,22 @@
   }
 
   function sendResult(id, result, error) {
-    const message = { type: "skyeyes_result", id, result, error };
+    sendResultWithTiming(id, result, error, null);
+  }
+
+  function sendResultWithTiming(id, result, error, startTime) {
+    const timing = startTime ? {
+      duration: Date.now() - startTime,
+      timestamp: Date.now(),
+    } : null;
+
+    const message = {
+      type: "skyeyes_result",
+      id,
+      result,
+      error,
+      timing
+    };
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -286,13 +342,15 @@
   };
 
   async function executeTerminalCommand(id, command, timeout) {
+    const startTime = Date.now();
+    healthMetrics.executions.terminal.count++;
     const timeoutMs = timeout || 30000; // Default 30s timeout
     terminalState.lastCommand = command;
     terminalState.lastOutput = '';
     terminalState.lastError = '';
     terminalState.exitCode = null;
     terminalState.isReady = false;
-    terminalState.startTime = Date.now();
+    terminalState.startTime = startTime;
 
     try {
       // Try to find terminal instance (Shiro or Foam)
@@ -363,18 +421,24 @@
 
       const result = await Promise.race([execPromise, timeoutPromise]);
       terminalState.isReady = true;
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.terminal.totalTime += duration;
 
-      sendResult(id, {
+      sendResultWithTiming(id, {
         exitCode: result.exitCode,
         output: result.output,
         error: result.error || '',
-        duration: Date.now() - terminalState.startTime,
-      }, null);
+        duration,
+      }, null, startTime);
 
     } catch (err) {
       terminalState.isReady = true;
       terminalState.exitCode = 1;
-      sendResult(id, null, String(err));
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.terminal.totalTime += duration;
+      healthMetrics.executions.terminal.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, String(err), startTime);
     }
   }
 
@@ -488,9 +552,14 @@
 
   // Spirit Integration: CSS Selector Query
   function querySelector(id, selector, all = false) {
+    const startTime = Date.now();
+    healthMetrics.executions.dom.count++;
+
     try {
       if (!selector) {
-        sendResult(id, null, 'No selector provided');
+        healthMetrics.executions.dom.errors++;
+        healthMetrics.totalErrors++;
+        sendResultWithTiming(id, null, 'No selector provided', startTime);
         return;
       }
 
@@ -510,13 +579,20 @@
         selector: generateSelector(el),
       }));
 
-      sendResult(id, {
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+
+      sendResultWithTiming(id, {
         count: results.length,
         elements: results,
         selector,
-      }, null);
+      }, null, startTime);
     } catch (err) {
-      sendResult(id, null, String(err));
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+      healthMetrics.executions.dom.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, String(err), startTime);
     }
   }
 
@@ -880,6 +956,107 @@
     } catch (err) {
       sendResult(id, null, serializeError(err));
     }
+  }
+
+  // Diagnostics endpoint - comprehensive bridge health reporting
+  function getDiagnostics(id) {
+    const now = Date.now();
+    const uptime = now - healthMetrics.connectTime;
+
+    // Calculate averages
+    const avgLatency = healthMetrics.latency || 0;
+    const avgEvalTime = healthMetrics.executions.eval.count > 0
+      ? healthMetrics.executions.eval.totalTime / healthMetrics.executions.eval.count
+      : 0;
+    const avgTerminalTime = healthMetrics.executions.terminal.count > 0
+      ? healthMetrics.executions.terminal.totalTime / healthMetrics.executions.terminal.count
+      : 0;
+    const avgDomTime = healthMetrics.executions.dom.count > 0
+      ? healthMetrics.executions.dom.totalTime / healthMetrics.executions.dom.count
+      : 0;
+
+    const diagnostics = {
+      page,
+      timestamp: now,
+      uptime,
+      uptimeFormatted: formatDuration(uptime),
+
+      connection: {
+        status: ws?.readyState === WebSocket.OPEN ? 'connected' : 'disconnected',
+        reconnectCount: healthMetrics.reconnectCount,
+        lastPingTime: healthMetrics.lastPingTime,
+        lastPongTime: healthMetrics.lastPongTime,
+        latency: avgLatency,
+        messageQueueSize: messageQueue.length,
+      },
+
+      traffic: {
+        totalMessages: healthMetrics.totalMessages,
+        totalErrors: healthMetrics.totalErrors,
+        errorRate: healthMetrics.totalMessages > 0
+          ? (healthMetrics.totalErrors / healthMetrics.totalMessages * 100).toFixed(2) + '%'
+          : '0%',
+      },
+
+      performance: {
+        eval: {
+          count: healthMetrics.executions.eval.count,
+          totalTime: healthMetrics.executions.eval.totalTime,
+          avgTime: Math.round(avgEvalTime),
+          errors: healthMetrics.executions.eval.errors,
+          errorRate: healthMetrics.executions.eval.count > 0
+            ? (healthMetrics.executions.eval.errors / healthMetrics.executions.eval.count * 100).toFixed(2) + '%'
+            : '0%',
+        },
+        terminal: {
+          count: healthMetrics.executions.terminal.count,
+          totalTime: healthMetrics.executions.terminal.totalTime,
+          avgTime: Math.round(avgTerminalTime),
+          errors: healthMetrics.executions.terminal.errors,
+          errorRate: healthMetrics.executions.terminal.count > 0
+            ? (healthMetrics.executions.terminal.errors / healthMetrics.executions.terminal.count * 100).toFixed(2) + '%'
+            : '0%',
+        },
+        dom: {
+          count: healthMetrics.executions.dom.count,
+          totalTime: healthMetrics.executions.dom.totalTime,
+          avgTime: Math.round(avgDomTime),
+          errors: healthMetrics.executions.dom.errors,
+          errorRate: healthMetrics.executions.dom.count > 0
+            ? (healthMetrics.executions.dom.errors / healthMetrics.executions.dom.count * 100).toFixed(2) + '%'
+            : '0%',
+        },
+      },
+
+      system: {
+        userAgent: navigator.userAgent,
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        },
+        memory: performance.memory ? {
+          usedJSHeapSize: Math.round(performance.memory.usedJSHeapSize / 1024 / 1024) + ' MB',
+          totalJSHeapSize: Math.round(performance.memory.totalJSHeapSize / 1024 / 1024) + ' MB',
+          jsHeapSizeLimit: Math.round(performance.memory.jsHeapSizeLimit / 1024 / 1024) + ' MB',
+        } : 'not available',
+        pageUrl: location.href,
+        pageTitle: document.title,
+      },
+    };
+
+    sendResult(id, diagnostics, null);
+  }
+
+  function formatDuration(ms) {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
   }
 
   // Cleanup on page unload
