@@ -146,6 +146,12 @@
           executeInSession(msg.id, msg.sessionId, msg.command, msg.timeout);
         } else if (msg.type === "session_kill") {
           killTerminalSession(msg.id, msg.sessionId);
+        } else if (msg.type === "element_paste") {
+          elementPaste(msg.id, msg.selector, msg.text);
+        } else if (msg.type === "element_keypress") {
+          elementKeypress(msg.id, msg.selector, msg.key, msg.options);
+        } else if (msg.type === "element_focus") {
+          elementFocus(msg.id, msg.selector);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -1333,6 +1339,307 @@
     } catch (err) {
       sendResult(id, null, serializeError(err));
     }
+  }
+
+  // Keyboard and Clipboard Integration for Terminal UIs
+
+  // Paste text into focused element (or element by selector)
+  function elementPaste(id, selector, text) {
+    try {
+      let element;
+
+      if (selector) {
+        element = document.querySelector(selector);
+        if (!element) {
+          sendResult(id, null, serializeError(new Error(`Element not found: ${selector}`)));
+          return;
+        }
+        element.focus();
+      } else {
+        element = document.activeElement;
+        if (!element || element === document.body) {
+          sendResult(id, null, serializeError(new Error('No focused element to paste into')));
+          return;
+        }
+      }
+
+      // Scroll into view if selector provided
+      if (selector) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      setTimeout(() => {
+        try {
+          // For input/textarea elements
+          if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+            const start = element.selectionStart || 0;
+            const end = element.selectionEnd || 0;
+            const currentValue = element.value || '';
+
+            // Insert text at cursor position
+            element.value = currentValue.substring(0, start) + text + currentValue.substring(end);
+
+            // Move cursor to end of pasted text
+            const newPos = start + text.length;
+            element.setSelectionRange(newPos, newPos);
+
+            // Trigger events
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+
+          } else if (element.isContentEditable) {
+            // For contenteditable elements
+            const selection = window.getSelection();
+            if (selection.rangeCount > 0) {
+              const range = selection.getRangeAt(0);
+              range.deleteContents();
+              range.insertNode(document.createTextNode(text));
+              range.collapse(false);
+              selection.removeAllRanges();
+              selection.addRange(range);
+            } else {
+              element.textContent += text;
+            }
+
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            sendResult(id, null, serializeError(new Error('Element is not editable')));
+            return;
+          }
+
+          sendResult(id, {
+            success: true,
+            selector: selector || 'activeElement',
+            pastedText: text.substring(0, 100),
+            pastedLength: text.length,
+            element: {
+              tag: element.tagName.toLowerCase(),
+              id: element.id || null,
+              value: (element.value || element.textContent || '').substring(0, 100),
+            }
+          }, null);
+        } catch (pasteErr) {
+          sendResult(id, null, serializeError(pasteErr));
+        }
+      }, selector ? 300 : 0);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Simulate keypress events (Enter, Tab, Ctrl+C, arrow keys, etc.)
+  function elementKeypress(id, selector, key, options = {}) {
+    try {
+      let element;
+
+      if (selector) {
+        element = document.querySelector(selector);
+        if (!element) {
+          sendResult(id, null, serializeError(new Error(`Element not found: ${selector}`)));
+          return;
+        }
+      } else {
+        element = document.activeElement;
+        if (!element || element === document.body) {
+          sendResult(id, null, serializeError(new Error('No focused element for keypress')));
+          return;
+        }
+      }
+
+      // Focus element if selector provided
+      if (selector) {
+        element.focus();
+      }
+
+      setTimeout(() => {
+        try {
+          // Parse key and modifiers
+          const keyInfo = parseKey(key);
+
+          // Create keyboard events (keydown, keypress, keyup)
+          const eventOptions = {
+            key: keyInfo.key,
+            code: keyInfo.code,
+            keyCode: keyInfo.keyCode,
+            which: keyInfo.keyCode,
+            bubbles: true,
+            cancelable: true,
+            ctrlKey: options.ctrlKey || keyInfo.ctrlKey || false,
+            shiftKey: options.shiftKey || keyInfo.shiftKey || false,
+            altKey: options.altKey || keyInfo.altKey || false,
+            metaKey: options.metaKey || keyInfo.metaKey || false,
+          };
+
+          // Dispatch events in order
+          const keydownEvent = new KeyboardEvent('keydown', eventOptions);
+          const keypressEvent = new KeyboardEvent('keypress', eventOptions);
+          const keyupEvent = new KeyboardEvent('keyup', eventOptions);
+
+          element.dispatchEvent(keydownEvent);
+
+          // Only dispatch keypress for printable characters
+          if (keyInfo.key.length === 1) {
+            element.dispatchEvent(keypressEvent);
+          }
+
+          element.dispatchEvent(keyupEvent);
+
+          // Trigger input event for content changes
+          if (keyInfo.key.length === 1 || keyInfo.key === 'Backspace' || keyInfo.key === 'Delete') {
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+
+          sendResult(id, {
+            success: true,
+            selector: selector || 'activeElement',
+            key: keyInfo.key,
+            modifiers: {
+              ctrl: eventOptions.ctrlKey,
+              shift: eventOptions.shiftKey,
+              alt: eventOptions.altKey,
+              meta: eventOptions.metaKey,
+            },
+            element: {
+              tag: element.tagName.toLowerCase(),
+              id: element.id || null,
+            }
+          }, null);
+        } catch (keypressErr) {
+          sendResult(id, null, serializeError(keypressErr));
+        }
+      }, selector ? 50 : 0);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Focus element by selector
+  function elementFocus(id, selector) {
+    try {
+      const element = document.querySelector(selector);
+
+      if (!element) {
+        sendResult(id, null, serializeError(new Error(`Element not found: ${selector}`)));
+        return;
+      }
+
+      // Scroll into view first
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      setTimeout(() => {
+        try {
+          element.focus();
+
+          // Get focus state
+          const hasFocus = document.activeElement === element;
+
+          sendResult(id, {
+            success: true,
+            selector,
+            focused: hasFocus,
+            element: {
+              tag: element.tagName.toLowerCase(),
+              id: element.id || null,
+              classes: Array.from(element.classList),
+              focusable: element.tabIndex >= 0 || element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.isContentEditable,
+            },
+            previousFocus: {
+              tag: document.activeElement?.tagName?.toLowerCase() || null,
+              id: document.activeElement?.id || null,
+            }
+          }, null);
+        } catch (focusErr) {
+          sendResult(id, null, serializeError(focusErr));
+        }
+      }, 300);
+
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Helper: Parse key string into key event properties
+  function parseKey(keyString) {
+    // Handle special key combinations (e.g., "Ctrl+C", "Shift+Enter")
+    const parts = keyString.split('+').map(s => s.trim());
+
+    let ctrlKey = false;
+    let shiftKey = false;
+    let altKey = false;
+    let metaKey = false;
+    let key = keyString;
+
+    // Extract modifiers
+    if (parts.length > 1) {
+      for (let i = 0; i < parts.length - 1; i++) {
+        const mod = parts[i].toLowerCase();
+        if (mod === 'ctrl' || mod === 'control') ctrlKey = true;
+        else if (mod === 'shift') shiftKey = true;
+        else if (mod === 'alt') altKey = true;
+        else if (mod === 'meta' || mod === 'cmd' || mod === 'command') metaKey = true;
+      }
+      key = parts[parts.length - 1];
+    }
+
+    // Map common key names to KeyboardEvent properties
+    const keyMap = {
+      'Enter': { key: 'Enter', code: 'Enter', keyCode: 13 },
+      'Tab': { key: 'Tab', code: 'Tab', keyCode: 9 },
+      'Escape': { key: 'Escape', code: 'Escape', keyCode: 27 },
+      'Backspace': { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+      'Delete': { key: 'Delete', code: 'Delete', keyCode: 46 },
+      'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+      'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+      'ArrowLeft': { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+      'ArrowRight': { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+      'Home': { key: 'Home', code: 'Home', keyCode: 36 },
+      'End': { key: 'End', code: 'End', keyCode: 35 },
+      'PageUp': { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+      'PageDown': { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+      'Space': { key: ' ', code: 'Space', keyCode: 32 },
+      'F1': { key: 'F1', code: 'F1', keyCode: 112 },
+      'F2': { key: 'F2', code: 'F2', keyCode: 113 },
+      'F3': { key: 'F3', code: 'F3', keyCode: 114 },
+      'F4': { key: 'F4', code: 'F4', keyCode: 115 },
+      'F5': { key: 'F5', code: 'F5', keyCode: 116 },
+      'F6': { key: 'F6', code: 'F6', keyCode: 117 },
+      'F7': { key: 'F7', code: 'F7', keyCode: 118 },
+      'F8': { key: 'F8', code: 'F8', keyCode: 119 },
+      'F9': { key: 'F9', code: 'F9', keyCode: 120 },
+      'F10': { key: 'F10', code: 'F10', keyCode: 121 },
+      'F11': { key: 'F11', code: 'F11', keyCode: 122 },
+      'F12': { key: 'F12', code: 'F12', keyCode: 123 },
+    };
+
+    let keyInfo;
+    if (keyMap[key]) {
+      keyInfo = keyMap[key];
+    } else if (key.length === 1) {
+      // Single character key
+      const charCode = key.charCodeAt(0);
+      keyInfo = {
+        key: key,
+        code: 'Key' + key.toUpperCase(),
+        keyCode: charCode,
+      };
+    } else {
+      // Unknown key, use as-is
+      keyInfo = {
+        key: key,
+        code: key,
+        keyCode: 0,
+      };
+    }
+
+    return {
+      ...keyInfo,
+      ctrlKey,
+      shiftKey,
+      altKey,
+      metaKey,
+    };
   }
 
   // Cleanup on page unload

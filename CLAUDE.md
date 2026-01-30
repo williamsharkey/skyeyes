@@ -45,6 +45,9 @@ package.json    # Metadata only (no build step)
 - **DOM snapshot** — capture full page HTML, viewport info, and computed styles
 - **CSS selector queries** — find elements with detailed metadata (rect, visibility, attributes)
 - **Element interaction** — click, type, and scroll commands for UI automation
+- **Clipboard operations** — paste text into input fields, textareas, and contenteditable elements
+- **Keyboard simulation** — simulate keypress events (Enter, Tab, Ctrl+C, arrow keys, modifiers)
+- **Focus management** — programmatically focus elements by selector with state tracking
 - **Visibility detection** — check if elements are visible and interactable
 - **Selector generation** — auto-generate unique CSS selectors for elements
 
@@ -221,6 +224,9 @@ Run the end-to-end test suites:
 # Terminal sessions tests
 ./test-terminal-sessions.sh
 
+# Keyboard and clipboard tests
+./test-keyboard-clipboard.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -322,3 +328,21 @@ Validates:
 - Output line limiting (prevent memory issues)
 - Default session auto-creation
 - Session uptime calculation
+
+### Keyboard and Clipboard Test Suite (`test-keyboard-clipboard.sh`)
+Validates:
+- Paste into input elements (text fields)
+- Paste into textarea elements (multiline)
+- Paste into contenteditable elements (rich text)
+- Paste at cursor position (text insertion)
+- Paste without selector (active element)
+- Enter key simulation
+- Tab key simulation
+- Escape key simulation
+- Arrow key simulation (up, down, left, right)
+- Modifier key combinations (Ctrl+C, Shift+Enter)
+- Focus by selector
+- Focus state tracking
+- Previous focus tracking
+- Keypress without selector (active element)
+- Element focusability detection
