@@ -37,6 +37,9 @@ package.json    # Metadata only (no build step)
 - **Terminal execution** — execute shell commands with exit code detection
 - **Exit code detection** — captures command exit codes for proper error handling
 - **Prompt detection** — identifies terminal prompts for readiness checking
+- **Multiplexed sessions** — tmux-like concurrent terminal sessions (create, list, attach, detach, kill)
+- **Session management** — isolated environments with separate histories, output buffers, and state
+- **Background processes** — run long-running commands in detached sessions
 
 ### Spirit Integration (UI Automation)
 - **DOM snapshot** — capture full page HTML, viewport info, and computed styles
@@ -215,6 +218,9 @@ Run the end-to-end test suites:
 # File transfer tests
 ./test-file-transfer.sh
 
+# Terminal sessions tests
+./test-terminal-sessions.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -300,3 +306,19 @@ Validates:
 - Empty and large file handling
 - JSON file read/write
 - Directory operations
+
+### Terminal Sessions Test Suite (`test-terminal-sessions.sh`)
+Validates:
+- Session state management (Map-based storage)
+- Concurrent operations support
+- Session ID generation (unique identifiers)
+- Metadata structure (created, lastActivity, attached, running)
+- Output buffering (array-based with limits)
+- Command history tracking
+- State transitions (running/stopped, attached/detached)
+- Timestamp tracking (created, lastActivity)
+- Session lookup and enumeration
+- Exit code tracking per session
+- Output line limiting (prevent memory issues)
+- Default session auto-creation
+- Session uptime calculation

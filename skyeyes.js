@@ -134,6 +134,18 @@
           fileDownload(msg.id, msg.path);
         } else if (msg.type === "diagnostics") {
           getDiagnostics(msg.id);
+        } else if (msg.type === "session_create") {
+          createTerminalSession(msg.id, msg.name, msg.options);
+        } else if (msg.type === "session_list") {
+          listTerminalSessions(msg.id);
+        } else if (msg.type === "session_attach") {
+          attachTerminalSession(msg.id, msg.sessionId);
+        } else if (msg.type === "session_detach") {
+          detachTerminalSession(msg.id, msg.sessionId);
+        } else if (msg.type === "session_exec") {
+          executeInSession(msg.id, msg.sessionId, msg.command, msg.timeout);
+        } else if (msg.type === "session_kill") {
+          killTerminalSession(msg.id, msg.sessionId);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -340,6 +352,11 @@
     isReady: true,
     startTime: null,
   };
+
+  // Multiplexed terminal sessions (like tmux)
+  const terminalSessions = new Map();
+  let sessionIdCounter = 0;
+  const DEFAULT_SESSION = 'default';
 
   async function executeTerminalCommand(id, command, timeout) {
     const startTime = Date.now();
@@ -1057,6 +1074,265 @@
     if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
     if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
     return `${seconds}s`;
+  }
+
+  // Multiplexed Terminal Sessions (tmux-like functionality)
+
+  function createTerminalSession(id, name, options = {}) {
+    try {
+      const sessionId = name || `session-${++sessionIdCounter}`;
+
+      if (terminalSessions.has(sessionId)) {
+        sendResult(id, null, serializeError(new Error(`Session '${sessionId}' already exists`)));
+        return;
+      }
+
+      const session = {
+        id: sessionId,
+        name: sessionId,
+        created: Date.now(),
+        lastActivity: Date.now(),
+        attached: false,
+        running: false,
+        currentCommand: null,
+        history: [],
+        output: [],
+        exitCode: null,
+        cwd: options.cwd || '~',
+        env: options.env || {},
+      };
+
+      terminalSessions.set(sessionId, session);
+
+      sendResult(id, {
+        success: true,
+        sessionId,
+        session: {
+          id: session.id,
+          name: session.name,
+          created: session.created,
+          attached: session.attached,
+        }
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  function listTerminalSessions(id) {
+    try {
+      const sessions = Array.from(terminalSessions.values()).map(session => ({
+        id: session.id,
+        name: session.name,
+        created: session.created,
+        lastActivity: session.lastActivity,
+        attached: session.attached,
+        running: session.running,
+        currentCommand: session.currentCommand,
+        historySize: session.history.length,
+        outputLines: session.output.length,
+        uptime: Date.now() - session.created,
+      }));
+
+      sendResult(id, {
+        count: sessions.length,
+        sessions,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  function attachTerminalSession(id, sessionId) {
+    try {
+      const session = terminalSessions.get(sessionId);
+
+      if (!session) {
+        sendResult(id, null, serializeError(new Error(`Session '${sessionId}' not found`)));
+        return;
+      }
+
+      session.attached = true;
+      session.lastActivity = Date.now();
+
+      sendResult(id, {
+        success: true,
+        sessionId,
+        output: session.output.slice(-100), // Last 100 lines
+        running: session.running,
+        currentCommand: session.currentCommand,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  function detachTerminalSession(id, sessionId) {
+    try {
+      const session = terminalSessions.get(sessionId);
+
+      if (!session) {
+        sendResult(id, null, serializeError(new Error(`Session '${sessionId}' not found`)));
+        return;
+      }
+
+      session.attached = false;
+      session.lastActivity = Date.now();
+
+      sendResult(id, {
+        success: true,
+        sessionId,
+        message: `Detached from session '${sessionId}'`,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  async function executeInSession(id, sessionId, command, timeout) {
+    const startTime = Date.now();
+
+    try {
+      // Get or create session
+      let session = terminalSessions.get(sessionId || DEFAULT_SESSION);
+      if (!session) {
+        // Auto-create default session if it doesn't exist
+        if (!sessionId || sessionId === DEFAULT_SESSION) {
+          session = {
+            id: DEFAULT_SESSION,
+            name: DEFAULT_SESSION,
+            created: Date.now(),
+            lastActivity: Date.now(),
+            attached: false,
+            running: false,
+            currentCommand: null,
+            history: [],
+            output: [],
+            exitCode: null,
+            cwd: '~',
+            env: {},
+          };
+          terminalSessions.set(DEFAULT_SESSION, session);
+        } else {
+          sendResult(id, null, serializeError(new Error(`Session '${sessionId}' not found`)));
+          return;
+        }
+      }
+
+      // Mark session as running
+      session.running = true;
+      session.currentCommand = command;
+      session.lastActivity = Date.now();
+      session.history.push({
+        command,
+        timestamp: startTime,
+      });
+
+      // Try to access shell
+      const shell = window.shiro?.shell || window.foam?.shell;
+
+      if (!shell) {
+        session.running = false;
+        session.currentCommand = null;
+        sendResult(id, null, serializeError(new Error('No shell available')));
+        return;
+      }
+
+      const timeoutMs = timeout || 30000;
+      const outputBuffer = [];
+      const errorBuffer = [];
+
+      // Execute command with output capture
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Command timeout after ${timeoutMs}ms`)), timeoutMs);
+      });
+
+      const execPromise = new Promise(async (resolve, reject) => {
+        try {
+          await shell.execLive(command, {
+            stdout: (text) => {
+              outputBuffer.push(text);
+              session.output.push({ type: 'stdout', text, timestamp: Date.now() });
+            },
+            stderr: (text) => {
+              errorBuffer.push(text);
+              session.output.push({ type: 'stderr', text, timestamp: Date.now() });
+            },
+          });
+
+          const exitCode = shell.lastExitCode || 0;
+          resolve({
+            exitCode,
+            output: outputBuffer.join(''),
+            error: errorBuffer.join(''),
+          });
+        } catch (err) {
+          reject(err);
+        }
+      });
+
+      const result = await Promise.race([execPromise, timeoutPromise]);
+
+      // Update session state
+      session.running = false;
+      session.currentCommand = null;
+      session.exitCode = result.exitCode;
+      session.lastActivity = Date.now();
+
+      // Trim output history if too large
+      if (session.output.length > 1000) {
+        session.output = session.output.slice(-1000);
+      }
+
+      const duration = Date.now() - startTime;
+
+      sendResultWithTiming(id, {
+        sessionId: session.id,
+        exitCode: result.exitCode,
+        output: result.output,
+        error: result.error,
+        duration,
+      }, null, startTime);
+
+    } catch (err) {
+      // Update session state on error
+      const session = terminalSessions.get(sessionId || DEFAULT_SESSION);
+      if (session) {
+        session.running = false;
+        session.currentCommand = null;
+        session.exitCode = 1;
+        session.lastActivity = Date.now();
+      }
+
+      const duration = Date.now() - startTime;
+      sendResultWithTiming(id, null, serializeError(err), startTime);
+    }
+  }
+
+  function killTerminalSession(id, sessionId) {
+    try {
+      const session = terminalSessions.get(sessionId);
+
+      if (!session) {
+        sendResult(id, null, serializeError(new Error(`Session '${sessionId}' not found`)));
+        return;
+      }
+
+      // Mark as not running (can't actually kill processes, just mark session)
+      session.running = false;
+      session.currentCommand = null;
+
+      // Remove session
+      terminalSessions.delete(sessionId);
+
+      sendResult(id, {
+        success: true,
+        sessionId,
+        message: `Session '${sessionId}' killed`,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
   }
 
   // Cleanup on page unload
