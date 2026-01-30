@@ -68,6 +68,9 @@ package.json    # Metadata only (no build step)
 - **Timing data** — duration tracking for all eval, terminal, and DOM operations
 - **Health metrics** — uptime, reconnect count, message count, error rates
 - **Latency tracking** — ping/pong round-trip time measurement
+- **Network interception** — automatic capture of fetch and XHR requests with full details
+- **Request/response logging** — URLs, methods, status codes, headers, bodies (truncated)
+- **Network statistics** — request counts by method, status, type, and average duration
 - **Execution stats** — count, total time, average time, error rate per operation type
 - **Diagnostics endpoint** — comprehensive bridge health reporting across all pages
 - **Memory monitoring** — heap usage tracking (when available)
@@ -242,6 +245,9 @@ Run the end-to-end test suites:
 # Accessibility tree tests
 ./test-accessibility-tree.sh
 
+# Network interception tests
+./test-network-interception.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -414,3 +420,18 @@ Validates:
 - Timing data tracking
 - Timestamp inclusion
 - Tree depth tracking
+
+### Network Interception Test Suite (`test-network-interception.sh`)
+Validates:
+- Network log retrieval
+- Summary statistics (totalRequests, byMethod, byStatus, byType)
+- Average duration calculation
+- Pagination (limit and offset options)
+- Filtering by method (GET, POST, etc.)
+- Filtering by status code
+- Filtering by URL pattern
+- Filtering by type (fetch vs xhr)
+- Clear network log functionality
+- Log entry structure
+- Response metadata (total, filtered, returned)
+- Summary aggregation

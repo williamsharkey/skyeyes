@@ -34,6 +34,209 @@
     }
   };
 
+  // Network Interception Layer - Capture HTTP requests
+  const networkLog = [];
+  const MAX_NETWORK_LOG_SIZE = 100;
+  const MAX_BODY_LENGTH = 1000; // Truncate bodies to 1KB
+
+  // Store original fetch and XMLHttpRequest
+  const originalFetch = window.fetch;
+  const OriginalXHR = window.XMLHttpRequest;
+
+  // Intercept fetch
+  window.fetch = function(...args) {
+    const startTime = Date.now();
+    const url = args[0] instanceof Request ? args[0].url : args[0];
+    const init = args[0] instanceof Request ? args[0] : args[1] || {};
+    const method = (args[0] instanceof Request ? args[0].method : init.method) || 'GET';
+
+    const logEntry = {
+      id: networkLog.length + 1,
+      type: 'fetch',
+      url,
+      method,
+      timestamp: startTime,
+      status: null,
+      statusText: null,
+      duration: null,
+      requestHeaders: {},
+      responseHeaders: {},
+      requestBody: null,
+      responseBody: null,
+      error: null,
+    };
+
+    // Capture request headers
+    if (args[0] instanceof Request) {
+      args[0].headers.forEach((value, key) => {
+        logEntry.requestHeaders[key] = value;
+      });
+    } else if (init.headers) {
+      if (init.headers instanceof Headers) {
+        init.headers.forEach((value, key) => {
+          logEntry.requestHeaders[key] = value;
+        });
+      } else {
+        logEntry.requestHeaders = { ...init.headers };
+      }
+    }
+
+    // Capture request body (if present)
+    if (init.body) {
+      try {
+        logEntry.requestBody = truncateString(String(init.body), MAX_BODY_LENGTH);
+      } catch (e) {
+        logEntry.requestBody = '[Unable to stringify body]';
+      }
+    }
+
+    // Call original fetch
+    return originalFetch.apply(this, args)
+      .then(async (response) => {
+        const duration = Date.now() - startTime;
+        logEntry.status = response.status;
+        logEntry.statusText = response.statusText;
+        logEntry.duration = duration;
+
+        // Capture response headers
+        response.headers.forEach((value, key) => {
+          logEntry.responseHeaders[key] = value;
+        });
+
+        // Clone response to read body without consuming it
+        const clone = response.clone();
+        try {
+          const text = await clone.text();
+          logEntry.responseBody = truncateString(text, MAX_BODY_LENGTH);
+        } catch (e) {
+          logEntry.responseBody = '[Unable to read response body]';
+        }
+
+        addToNetworkLog(logEntry);
+        return response;
+      })
+      .catch((error) => {
+        const duration = Date.now() - startTime;
+        logEntry.duration = duration;
+        logEntry.error = error.message || String(error);
+        addToNetworkLog(logEntry);
+        throw error;
+      });
+  };
+
+  // Intercept XMLHttpRequest
+  window.XMLHttpRequest = function() {
+    const xhr = new OriginalXHR();
+    const logEntry = {
+      id: networkLog.length + 1,
+      type: 'xhr',
+      url: null,
+      method: null,
+      timestamp: Date.now(),
+      status: null,
+      statusText: null,
+      duration: null,
+      requestHeaders: {},
+      responseHeaders: {},
+      requestBody: null,
+      responseBody: null,
+      error: null,
+    };
+
+    let startTime = null;
+
+    // Intercept open
+    const originalOpen = xhr.open;
+    xhr.open = function(method, url, ...rest) {
+      logEntry.method = method;
+      logEntry.url = url;
+      startTime = Date.now();
+      logEntry.timestamp = startTime;
+      return originalOpen.call(this, method, url, ...rest);
+    };
+
+    // Intercept setRequestHeader
+    const originalSetRequestHeader = xhr.setRequestHeader;
+    xhr.setRequestHeader = function(name, value) {
+      logEntry.requestHeaders[name] = value;
+      return originalSetRequestHeader.call(this, name, value);
+    };
+
+    // Intercept send
+    const originalSend = xhr.send;
+    xhr.send = function(body) {
+      if (body) {
+        try {
+          logEntry.requestBody = truncateString(String(body), MAX_BODY_LENGTH);
+        } catch (e) {
+          logEntry.requestBody = '[Unable to stringify body]';
+        }
+      }
+      return originalSend.call(this, body);
+    };
+
+    // Listen for completion
+    xhr.addEventListener('load', function() {
+      const duration = Date.now() - startTime;
+      logEntry.status = xhr.status;
+      logEntry.statusText = xhr.statusText;
+      logEntry.duration = duration;
+
+      // Capture response headers
+      const headerString = xhr.getAllResponseHeaders();
+      const headers = headerString.split('\r\n');
+      for (const header of headers) {
+        const [key, value] = header.split(': ');
+        if (key) logEntry.responseHeaders[key] = value;
+      }
+
+      // Capture response body
+      try {
+        logEntry.responseBody = truncateString(xhr.responseText, MAX_BODY_LENGTH);
+      } catch (e) {
+        logEntry.responseBody = '[Unable to read response]';
+      }
+
+      addToNetworkLog(logEntry);
+    });
+
+    xhr.addEventListener('error', function() {
+      const duration = Date.now() - startTime;
+      logEntry.duration = duration;
+      logEntry.error = 'Network error';
+      addToNetworkLog(logEntry);
+    });
+
+    xhr.addEventListener('timeout', function() {
+      const duration = Date.now() - startTime;
+      logEntry.duration = duration;
+      logEntry.error = 'Request timeout';
+      addToNetworkLog(logEntry);
+    });
+
+    return xhr;
+  };
+
+  // Copy static properties from original XHR
+  Object.setPrototypeOf(window.XMLHttpRequest.prototype, OriginalXHR.prototype);
+  Object.setPrototypeOf(window.XMLHttpRequest, OriginalXHR);
+
+  // Helper: Add entry to network log
+  function addToNetworkLog(entry) {
+    networkLog.push(entry);
+    // Limit log size
+    if (networkLog.length > MAX_NETWORK_LOG_SIZE) {
+      networkLog.shift();
+    }
+  }
+
+  // Helper: Truncate string to max length
+  function truncateString(str, maxLength) {
+    if (!str) return null;
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength) + '... [truncated]';
+  }
+
   // Monkey-patch console to forward output
   const originalConsole = {
     log: console.log.bind(console),
@@ -164,6 +367,10 @@
           clearSnapshots(msg.id, msg.snapshotId);
         } else if (msg.type === "accessibility_tree") {
           getAccessibilityTree(msg.id, msg.options);
+        } else if (msg.type === "network_log") {
+          getNetworkLog(msg.id, msg.options);
+        } else if (msg.type === "network_clear") {
+          clearNetworkLog(msg.id);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -2934,6 +3141,111 @@
     }
 
     return navigation;
+  }
+
+  // Network Log Retrieval
+
+  function getNetworkLog(id, options = {}) {
+    try {
+      const limit = options.limit || 50;
+      const offset = options.offset || 0;
+      const filter = options.filter || {};
+
+      let filtered = networkLog.slice();
+
+      // Apply filters
+      if (filter.method) {
+        filtered = filtered.filter(entry =>
+          entry.method?.toLowerCase() === filter.method.toLowerCase()
+        );
+      }
+
+      if (filter.status) {
+        filtered = filtered.filter(entry => entry.status === filter.status);
+      }
+
+      if (filter.url) {
+        filtered = filtered.filter(entry =>
+          entry.url?.includes(filter.url)
+        );
+      }
+
+      if (filter.type) {
+        filtered = filtered.filter(entry => entry.type === filter.type);
+      }
+
+      // Apply offset and limit
+      const results = filtered.slice(offset, offset + limit);
+
+      sendResult(id, {
+        total: networkLog.length,
+        filtered: filtered.length,
+        returned: results.length,
+        offset,
+        limit,
+        entries: results,
+        summary: {
+          totalRequests: networkLog.length,
+          byMethod: summarizeByMethod(networkLog),
+          byStatus: summarizeByStatus(networkLog),
+          byType: summarizeByType(networkLog),
+          avgDuration: calculateAvgDuration(networkLog),
+        }
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  function clearNetworkLog(id) {
+    try {
+      const count = networkLog.length;
+      networkLog.length = 0; // Clear array
+      sendResult(id, {
+        cleared: count,
+        remaining: networkLog.length,
+      }, null);
+    } catch (err) {
+      sendResult(id, null, serializeError(err));
+    }
+  }
+
+  // Helper: Summarize requests by method
+  function summarizeByMethod(entries) {
+    const summary = {};
+    for (const entry of entries) {
+      const method = entry.method || 'UNKNOWN';
+      summary[method] = (summary[method] || 0) + 1;
+    }
+    return summary;
+  }
+
+  // Helper: Summarize requests by status code
+  function summarizeByStatus(entries) {
+    const summary = {};
+    for (const entry of entries) {
+      const status = entry.status || 'pending';
+      summary[status] = (summary[status] || 0) + 1;
+    }
+    return summary;
+  }
+
+  // Helper: Summarize requests by type
+  function summarizeByType(entries) {
+    const summary = {};
+    for (const entry of entries) {
+      const type = entry.type || 'unknown';
+      summary[type] = (summary[type] || 0) + 1;
+    }
+    return summary;
+  }
+
+  // Helper: Calculate average duration
+  function calculateAvgDuration(entries) {
+    const withDuration = entries.filter(e => e.duration !== null);
+    if (withDuration.length === 0) return 0;
+    const total = withDuration.reduce((sum, e) => sum + e.duration, 0);
+    return Math.round(total / withDuration.length);
   }
 
   // Cleanup on page unload
