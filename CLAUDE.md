@@ -43,6 +43,7 @@ package.json    # Metadata only (no build step)
 
 ### Spirit Integration (UI Automation)
 - **DOM snapshot** — capture full page HTML, viewport info, and computed styles
+- **Visual snapshot** — capture page visual state as structured description (DOM tree, visible text, layout zones, interactive elements)
 - **CSS selector queries** — find elements with detailed metadata (rect, visibility, attributes)
 - **Element interaction** — click, type, and scroll commands for UI automation
 - **Clipboard operations** — paste text into input fields, textareas, and contenteditable elements
@@ -50,6 +51,7 @@ package.json    # Metadata only (no build step)
 - **Focus management** — programmatically focus elements by selector with state tracking
 - **Visibility detection** — check if elements are visible and interactable
 - **Selector generation** — auto-generate unique CSS selectors for elements
+- **Layout analysis** — automatic detection of header, sidebar, main content, footer zones
 
 ### Production Features
 - **Structured errors** — detailed error objects with stack traces, timestamps, and error types
@@ -227,6 +229,9 @@ Run the end-to-end test suites:
 # Keyboard and clipboard tests
 ./test-keyboard-clipboard.sh
 
+# Visual snapshot tests
+./test-visual-snapshot.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -346,3 +351,21 @@ Validates:
 - Previous focus tracking
 - Keypress without selector (active element)
 - Element focusability detection
+
+### Visual Snapshot Test Suite (`test-visual-snapshot.sh`)
+Validates:
+- Basic visual snapshot generation
+- Viewport information (width, height, scroll positions)
+- Document information (title, url, readyState)
+- Visual tree structure (tag, depth, visible, rect)
+- Element rectangles (x, y, width, height)
+- Visible text extraction
+- Interactive elements detection
+- Layout zones (header, sidebar, main, footer)
+- maxDepth option handling
+- includeStyles option handling
+- maxElements option handling
+- Timestamp inclusion
+- Timing data tracking
+- Device pixel ratio
+- Element selectors in interactive elements

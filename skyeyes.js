@@ -152,6 +152,8 @@
           elementKeypress(msg.id, msg.selector, msg.key, msg.options);
         } else if (msg.type === "element_focus") {
           elementFocus(msg.id, msg.selector);
+        } else if (msg.type === "visual_snapshot") {
+          getVisualSnapshot(msg.id, msg.options);
         }
       } catch (err) {
         originalConsole.error("[skyeyes] Failed to parse message:", err);
@@ -1640,6 +1642,329 @@
       altKey,
       metaKey,
     };
+  }
+
+  // Visual Snapshot - Capture page visual state as structured description
+
+  function getVisualSnapshot(id, options = {}) {
+    const startTime = Date.now();
+    healthMetrics.executions.dom.count++;
+
+    try {
+      const maxDepth = options.maxDepth || 10;
+      const includeHidden = options.includeHidden || false;
+      const includeStyles = options.includeStyles !== false; // default true
+      const maxElements = options.maxElements || 200;
+
+      // Capture viewport information
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        devicePixelRatio: window.devicePixelRatio || 1,
+      };
+
+      // Capture document dimensions
+      const documentInfo = {
+        width: document.documentElement.scrollWidth,
+        height: document.documentElement.scrollHeight,
+        title: document.title,
+        url: location.href,
+        readyState: document.readyState,
+      };
+
+      // Build visual DOM tree
+      const visualTree = buildVisualTree(document.body, 0, maxDepth, includeHidden, includeStyles, maxElements);
+
+      // Extract visible text content
+      const visibleText = extractVisibleText(document.body, maxElements);
+
+      // Find interactive elements
+      const interactiveElements = findInteractiveElements(maxElements);
+
+      // Calculate layout zones
+      const layoutZones = calculateLayoutZones(viewport);
+
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+
+      sendResultWithTiming(id, {
+        viewport,
+        document: documentInfo,
+        visualTree,
+        visibleText,
+        interactiveElements,
+        layoutZones,
+        timestamp: Date.now(),
+      }, null, startTime);
+
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      healthMetrics.executions.dom.totalTime += duration;
+      healthMetrics.executions.dom.errors++;
+      healthMetrics.totalErrors++;
+      sendResultWithTiming(id, null, serializeError(err), startTime);
+    }
+  }
+
+  // Helper: Build visual DOM tree with layout information
+  function buildVisualTree(element, depth, maxDepth, includeHidden, includeStyles, maxElements) {
+    if (!element || depth > maxDepth) {
+      return null;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const computedStyle = window.getComputedStyle(element);
+    const isVisible = isElementVisible(element);
+
+    // Skip hidden elements unless includeHidden is true
+    if (!isVisible && !includeHidden) {
+      return null;
+    }
+
+    const node = {
+      tag: element.tagName?.toLowerCase() || 'unknown',
+      depth,
+      visible: isVisible,
+      rect: {
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      text: getElementText(element),
+    };
+
+    // Add ID and classes if present
+    if (element.id) node.id = element.id;
+    if (element.className && typeof element.className === 'string') {
+      const classes = element.className.trim().split(/\s+/).filter(c => c);
+      if (classes.length > 0) node.classes = classes;
+    }
+
+    // Add styles if requested and visible
+    if (includeStyles && isVisible) {
+      node.styles = {
+        display: computedStyle.display,
+        position: computedStyle.position,
+        zIndex: computedStyle.zIndex,
+        backgroundColor: computedStyle.backgroundColor,
+        color: computedStyle.color,
+        fontSize: computedStyle.fontSize,
+        fontWeight: computedStyle.fontWeight,
+      };
+    }
+
+    // Add interactive attributes
+    if (element.tagName === 'A' && element.href) {
+      node.href = element.href;
+    }
+    if (element.tagName === 'INPUT') {
+      node.inputType = element.type;
+      node.value = element.value?.substring(0, 50);
+      node.placeholder = element.placeholder;
+    }
+    if (element.tagName === 'BUTTON' || element.tagName === 'A' || element.onclick) {
+      node.interactive = true;
+    }
+    if (element.getAttribute('role')) {
+      node.role = element.getAttribute('role');
+    }
+
+    // Recursively build children for visible elements
+    if (isVisible && element.children && element.children.length > 0) {
+      const children = [];
+      let elementCount = 0;
+
+      for (const child of element.children) {
+        if (elementCount >= maxElements) break;
+
+        const childNode = buildVisualTree(child, depth + 1, maxDepth, includeHidden, includeStyles, maxElements - elementCount);
+        if (childNode) {
+          children.push(childNode);
+          elementCount++;
+        }
+      }
+
+      if (children.length > 0) {
+        node.children = children;
+        node.childCount = children.length;
+      }
+    }
+
+    return node;
+  }
+
+  // Helper: Get text content of element (first 200 chars)
+  function getElementText(element) {
+    if (!element) return '';
+
+    // For input elements, get value
+    if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+      return element.value?.trim().substring(0, 200) || '';
+    }
+
+    // Get direct text content (not from children)
+    let text = '';
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent;
+      }
+    }
+
+    return text.trim().substring(0, 200);
+  }
+
+  // Helper: Extract all visible text from page
+  function extractVisibleText(root, maxElements) {
+    const textBlocks = [];
+    let count = 0;
+
+    function traverse(element) {
+      if (!element || count >= maxElements) return;
+
+      if (isElementVisible(element)) {
+        const text = getElementText(element);
+        if (text.length > 0) {
+          const rect = element.getBoundingClientRect();
+          textBlocks.push({
+            text,
+            tag: element.tagName?.toLowerCase(),
+            x: Math.round(rect.left + window.scrollX),
+            y: Math.round(rect.top + window.scrollY),
+            fontSize: window.getComputedStyle(element).fontSize,
+          });
+          count++;
+        }
+
+        for (const child of element.children || []) {
+          traverse(child);
+        }
+      }
+    }
+
+    traverse(root);
+    return textBlocks;
+  }
+
+  // Helper: Find all interactive elements
+  function findInteractiveElements(maxElements) {
+    const interactive = [];
+    const selectors = [
+      'button',
+      'a[href]',
+      'input',
+      'textarea',
+      'select',
+      '[onclick]',
+      '[role="button"]',
+      '[role="link"]',
+      '[tabindex]',
+    ];
+
+    const elements = document.querySelectorAll(selectors.join(','));
+    let count = 0;
+
+    for (const el of elements) {
+      if (count >= maxElements) break;
+
+      if (isElementVisible(el)) {
+        const rect = el.getBoundingClientRect();
+        interactive.push({
+          tag: el.tagName?.toLowerCase(),
+          type: el.type || el.getAttribute('role') || 'interactive',
+          id: el.id || null,
+          classes: Array.from(el.classList).slice(0, 3),
+          text: getElementText(el),
+          rect: {
+            x: Math.round(rect.left + window.scrollX),
+            y: Math.round(rect.top + window.scrollY),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+          selector: generateSelector(el),
+        });
+        count++;
+      }
+    }
+
+    return interactive;
+  }
+
+  // Helper: Calculate layout zones (header, sidebar, main, footer)
+  function calculateLayoutZones(viewport) {
+    const zones = {
+      header: null,
+      sidebar: null,
+      main: null,
+      footer: null,
+    };
+
+    // Heuristics for common layout patterns
+    const headerCandidates = document.querySelectorAll('header, [role="banner"], nav');
+    const footerCandidates = document.querySelectorAll('footer, [role="contentinfo"]');
+    const mainCandidates = document.querySelectorAll('main, [role="main"], article');
+    const asideCandidates = document.querySelectorAll('aside, [role="complementary"]');
+
+    // Find header (top 20% of viewport)
+    for (const el of headerCandidates) {
+      const rect = el.getBoundingClientRect();
+      if (rect.top < viewport.height * 0.2 && isElementVisible(el)) {
+        zones.header = {
+          y: Math.round(rect.top + window.scrollY),
+          height: Math.round(rect.height),
+          width: Math.round(rect.width),
+        };
+        break;
+      }
+    }
+
+    // Find footer (bottom 20% of viewport)
+    for (const el of footerCandidates) {
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > viewport.height * 0.8 && isElementVisible(el)) {
+        zones.footer = {
+          y: Math.round(rect.top + window.scrollY),
+          height: Math.round(rect.height),
+          width: Math.round(rect.width),
+        };
+        break;
+      }
+    }
+
+    // Find main content area
+    for (const el of mainCandidates) {
+      if (isElementVisible(el)) {
+        const rect = el.getBoundingClientRect();
+        zones.main = {
+          x: Math.round(rect.left + window.scrollX),
+          y: Math.round(rect.top + window.scrollY),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+        break;
+      }
+    }
+
+    // Find sidebar (left or right 30% of viewport)
+    for (const el of asideCandidates) {
+      if (isElementVisible(el)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width < viewport.width * 0.3) {
+          zones.sidebar = {
+            x: Math.round(rect.left + window.scrollX),
+            y: Math.round(rect.top + window.scrollY),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            position: rect.left < viewport.width / 2 ? 'left' : 'right',
+          };
+          break;
+        }
+      }
+    }
+
+    return zones;
   }
 
   // Cleanup on page unload
