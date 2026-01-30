@@ -48,8 +48,9 @@ package.json    # Metadata only (no build step)
 ### Production Features
 - **Structured errors** — detailed error objects with stack traces, timestamps, and error types
 - **Batch commands** — execute multiple commands in sequence with individual result tracking
-- **File transfer** — upload/download files to/from browser OS VFS (Shiro/Foam)
+- **File transfer** — upload/download files to/from browser OS VFS (Shiro/Foam) with base64 encoding
 - **Error recovery** — graceful handling of errors with detailed context
+- **Binary data support** — base64 encoding/decoding for binary files over WebSocket
 
 ### Performance Monitoring
 - **Timing data** — duration tracking for all eval, terminal, and DOM operations
@@ -124,6 +125,22 @@ curl -X POST localhost:7777/api/skyeyes/shiro/exec \
 curl -X POST localhost:7777/api/skyeyes/shiro/exec \
   -H 'Content-Type: application/json' \
   -d '{"code":"/* Diagnostics accessible via internal healthMetrics object */"}'
+
+# File Transfer: Upload text file to browser OS
+curl -X POST localhost:7777/api/skyeyes/foam/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"const vfs = window.foam?.shell?.vfs; vfs.writeFile(\"/home/user/test.txt\", \"Hello from host!\"); return {success: true};"}'
+
+# File Transfer: Download file from browser OS
+curl -X POST localhost:7777/api/skyeyes/foam/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"const vfs = window.foam?.shell?.vfs; const content = vfs.readFile(\"/home/user/test.txt\"); return {content};"}'
+
+# File Transfer: Upload binary file (base64 encoded)
+FILE_B64=$(base64 -w 0 image.png)
+curl -X POST localhost:7777/api/skyeyes/foam/exec \
+  -H 'Content-Type: application/json' \
+  -d "{\"code\":\"const vfs = window.foam?.shell?.vfs; const decoded = atob('$FILE_B64'); vfs.writeFile('/home/user/image.png', decoded); return {success: true};\"}"
 ```
 
 ## Cross-Project Integration
@@ -195,6 +212,9 @@ Run the end-to-end test suites:
 # Performance monitoring tests
 ./test-performance-monitoring.sh
 
+# File transfer tests
+./test-file-transfer.sh
+
 # Or specify a different base URL
 ./test-skyeyes.sh http://localhost:8080
 ./test-spirit-integration.sh http://localhost:8080
@@ -264,3 +284,19 @@ Validates:
 - Sequential timing accuracy
 - High-resolution timing (performance.now)
 - Metric aggregation
+
+### File Transfer Test Suite (`test-file-transfer.sh`)
+Validates:
+- VFS availability detection
+- Text file read/write operations
+- Base64 encoding/decoding
+- Path resolution (~ expansion, relative paths)
+- File existence checks
+- Multiple file operations (batch)
+- Binary data handling
+- Error handling (invalid paths, missing files)
+- UTF-8 text support
+- File overwrite behavior
+- Empty and large file handling
+- JSON file read/write
+- Directory operations
